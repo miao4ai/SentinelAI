@@ -4,11 +4,11 @@
 # logged-in users and low CPU load.
 set -e
 
-IDLE_MIN=30
+IDLE_MIN=120
 
 cat >/usr/local/bin/idle-check.sh <<'EOF'
 #!/bin/bash
-IDLE_MIN=30
+IDLE_MIN=120
 STAMP=/var/run/last-active
 now=$(date +%s)
 users=$(who | wc -l)
