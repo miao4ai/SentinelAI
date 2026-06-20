@@ -3,6 +3,6 @@
 set -e
 PROJECT=just-aloe-499321-q2
 ZONE=us-central1-a
-NAME=sentinel-dev
+NAME=sentinel-gpu
 gcloud compute instances stop "$NAME" --project="$PROJECT" --zone="$ZONE"
 echo "Stopped $NAME. Disk is kept; start again with gcp-start.sh."

@@ -1,12 +1,13 @@
 #!/bin/bash
-# Create (or restart) the SentinelAI CPU dev VM.
-# - e2-standard-4: 4 vCPU / 16GB, no GPU (no GPU quota needed)
-# - Builds billing history to unlock GPU quota later
-# - Anti-runaway-cost: 8h hard auto-stop + idle auto-shutdown (30min)
+# Create (or restart) the SentinelAI L4 GPU machine.
+# - g2-standard-8: 8 vCPU / 32GB, 1x NVIDIA L4 (24GB)
+# - PyTorch + CUDA image (drivers preinstalled)
+# - 250GB SSD for datasets / model weights / checkpoints
+# - Anti-runaway-cost: 4h hard auto-stop + idle auto-shutdown (120min)
 set -e
 PROJECT=just-aloe-499321-q2
 ZONE=us-central1-a
-NAME=sentinel-dev
+NAME=sentinel-gpu
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # If the VM already exists, just start it instead of recreating.
@@ -18,12 +19,13 @@ fi
 gcloud compute instances create "$NAME" \
   --project="$PROJECT" \
   --zone="$ZONE" \
-  --machine-type=e2-standard-4 \
-  --image-family=ubuntu-2204-lts \
-  --image-project=ubuntu-os-cloud \
-  --boot-disk-size=50GB \
+  --machine-type=g2-standard-8 \
+  --image-family=pytorch-2-9-cu129-ubuntu-2204-nvidia-580 \
+  --image-project=deeplearning-platform-release \
+  --boot-disk-size=250GB \
   --boot-disk-type=pd-balanced \
-  --max-run-duration=28800s \
+  --max-run-duration=14400s \
   --instance-termination-action=STOP \
+  --maintenance-policy=TERMINATE \
   --metadata-from-file=startup-script="$DIR/idle-shutdown.sh" \
-  --labels=purpose=sentinelai-dev
+  --labels=purpose=sentinelai-gpu
