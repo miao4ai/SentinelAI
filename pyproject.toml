@@ -7,6 +7,9 @@ requires-python = ">=3.10"
 # scripts/setup-env.sh because its wheel index differs between CPU and CUDA hosts.
 dependencies = [
     "numpy>=1.24",
+    # AST (audio expert) ships via HuggingFace Transformers. torch/torchvision/
+    # torchaudio are still installed separately by scripts/setup-env.sh.
+    "transformers>=4.40",
 ]
 
 [build-system]
