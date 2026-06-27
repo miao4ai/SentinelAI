@@ -10,6 +10,8 @@ dependencies = [
     # AST (audio expert) ships via HuggingFace Transformers. torch/torchvision/
     # torchaudio are still installed separately by scripts/setup-env.sh.
     "transformers>=4.40",
+    # SentencePiece backs the XLM-R / DeBERTa tokenizers used by the text expert.
+    "sentencepiece>=0.1.99",
 ]
 
 [build-system]
