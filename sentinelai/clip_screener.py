@@ -157,7 +157,6 @@ class ClipScreener:
         expensive as encoding images, but the pool is fixed, so we pay for it a
         single time and then every frame is just one image-encode + a matmul.
         """
-        import torch
         from transformers import CLIPModel, CLIPProcessor
 
         self.device = device or get_device()
@@ -165,16 +164,15 @@ class ClipScreener:
         self.processor = CLIPProcessor.from_pretrained(model_name)
         self.model = CLIPModel.from_pretrained(model_name).to(self.device).eval()
 
-        # Pre-compute L2-normalised text features for the whole prompt pool.
-        text_inputs = self.processor(
+        # Pre-tokenise the fixed prompt pool once and keep the token tensors. We do
+        # NOT pre-encode text features: instead each batch runs the full CLIP
+        # forward, which computes the properly projected + L2-normalised image-text
+        # similarities (``logits_per_image``) and applies CLIP's learned temperature
+        # internally. That is robust across transformers versions, whose
+        # get_text_features / get_image_features return types have changed.
+        self.text_inputs = self.processor(
             text=[p.text for p in self.prompts], return_tensors="pt", padding=True
         ).to(self.device)
-        with torch.no_grad():
-            tf = self.model.get_text_features(**text_inputs)
-        self.text_features = tf / tf.norm(dim=-1, keepdim=True)
-        # CLIP stores a learned temperature; exp() turns it into the logit scale
-        # that sharpens the cosine similarities before softmax.
-        self.logit_scale = self.model.logit_scale.exp()
 
     def _to_pil(self, image: ImageInput):
         """Coerce a path / RGB array / PIL image into a PIL RGB image for CLIP."""
@@ -202,13 +200,17 @@ class ClipScreener:
         results: list[ClipFrameScore] = []
         for start in range(0, len(images), batch_size):
             chunk = [self._to_pil(im) for im in images[start : start + batch_size]]
-            inputs = self.processor(images=chunk, return_tensors="pt").to(self.device)
+            image_inputs = self.processor(images=chunk, return_tensors="pt").to(self.device)
             with torch.no_grad():
-                feats = self.model.get_image_features(**inputs)
-            feats = feats / feats.norm(dim=-1, keepdim=True)
-            # (batch, num_prompts) cosine similarities, temperature-scaled.
-            logits = self.logit_scale * feats @ self.text_features.T
-            probs = logits.softmax(dim=-1).cpu().numpy()
+                # Full CLIP forward: internally projects + normalises both sides and
+                # scales by the learned temperature, yielding logits_per_image.
+                out = self.model(
+                    input_ids=self.text_inputs["input_ids"],
+                    attention_mask=self.text_inputs["attention_mask"],
+                    pixel_values=image_inputs["pixel_values"],
+                )
+            # (batch, num_prompts): each row is a distribution over the prompt pool.
+            probs = out.logits_per_image.softmax(dim=-1).cpu().numpy()
             for offset, row in enumerate(probs):
                 scores, overall, top = _aggregate_prompt_probs(row, self.prompts)
                 results.append(
