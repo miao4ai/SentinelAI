@@ -53,6 +53,11 @@ TARGET_SR = 16000
 # AST was fine-tuned on ~10 s clips, so we score the track in 10 s windows.
 WINDOW_SECONDS = 10.0
 
+# The mel filterbank needs at least one full 25 ms window (400 samples @ 16 kHz).
+# Clips shorter than this (silent/broken audio tracks) are zero-padded up to it so
+# feature extraction never crashes on a near-empty waveform.
+_MIN_SAMPLES = 400
+
 # Accepted audio input: a media file path, or an already-decoded mono waveform.
 AudioInput = Union[str, Path, np.ndarray]
 
@@ -223,7 +228,11 @@ class AudioExpert:
         audio, applies a mel filterbank and takes the log, yielding a
         (time × mel-bins) image that the transformer treats like a picture.
         Returned as a batch tensor on the device, ready for ``self.model``.
+        Ultra-short clips (broken/silent tracks) are zero-padded so the mel
+        filterbank always has at least one full window to work on.
         """
+        if len(clip) < _MIN_SAMPLES:
+            clip = np.pad(clip, (0, _MIN_SAMPLES - len(clip)))
         inputs = self.feature_extractor(
             clip, sampling_rate=TARGET_SR, return_tensors="pt"
         )
