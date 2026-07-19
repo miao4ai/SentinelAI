@@ -490,6 +490,38 @@ Video → Key
 Video → Value
 ```
 
+### 实现
+
+模块：`sentinelai/cross_attention.py` → `CrossAttentionFusion`
+
+输入 / 输出：
+
+```text
+video_seq (B, T, video_dim)   # 逐帧时序特征 (VideoMAE/TimeSformer) → K, V
+guide     (B, [S,] guide_dim) # 音频/文本特征 → Q
+      ↓
+logits    (B, n_categories)   # 各类违规分数
+attention (B, S, T)           # 每个 query 对每帧的注意力（可解释：模型看了哪几帧）
+```
+
+计算流程：
+
+```text
+video → Linear → K,V
+guide → Linear → Q
+MultiheadAttention(Q, K, V) → 残差+LayerNorm → FFN+残差+LayerNorm
+      → 池化 → 分类头 → logits
+```
+
+要点：
+
+* Q=引导模态（听到什么），K/V=视频时序（去哪帧找它）——"听到尖叫，聚焦相关帧"
+* K/V 是**帧序列**（含时序），故能区分"切菜"与"砍人"（单帧做不到）
+* 返回 `attention` 供解释：直接看模型关注了哪几帧
+* 本模块只做融合层；VideoMAE 抽时序特征 (6.1) 与 Lightning 训练 (6.3) 为独立步骤
+
+测试：`tests/test_cross_attention.py`（形状 / 2维guide / 注意力归一 / 概率范围，CPU 实测通过）
+
 ---
 
 # Phase 3
