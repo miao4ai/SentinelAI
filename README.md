@@ -55,7 +55,21 @@ Modern video content can hide unsafe material in any modality: a violent frame, 
 
 ### Experiments
 
-- **`docs/experiment_1.md`** — fusion-depth comparison (decision-tree vs logit-MLP vs embedding-MLP): Precision / Recall / F1 / AUC. Earlier fusion wins; AUC vs F1 reveal the voting baseline's threshold problem. Reproduce with `python -m sentinelai.fusion.compare`.
+**Fusion-depth comparison** (`docs/experiment_1.md`) — fusing the three experts at
+different pipeline depths, on a shared train/test split. Reproduce with
+`python -m sentinelai.fusion.compare`.
+
+| Fusion strategy | Fuse at | Precision | Recall | F1 | AUC |
+|---|---|---|---|---|---|
+| mean-voting (untrained) | decision | 0.388 | 1.000 | 0.559 | 0.994 |
+| decision-tree | decision | 0.936 | 0.952 | 0.944 | 0.956 |
+| logit-mlp | logits | 0.973 | 0.973 | 0.973 | 0.998 |
+| **embedding-mlp** | embedding | **0.983** | **0.993** | **0.988** | **0.999** |
+
+Earlier fusion wins (embedding > logits > decision); the untrained voting baseline
+has a high AUC but poor F1 — its ranking is good, only its fixed 0.5 threshold is
+bad. _Numbers are on synthetic features validating the framework; real-data
+numbers await the feature-extraction pipeline._
 
 ### Verified on real data
 
