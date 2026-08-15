@@ -518,9 +518,24 @@ MultiheadAttention(Q, K, V) → 残差+LayerNorm → FFN+残差+LayerNorm
 * Q=引导模态（听到什么），K/V=视频时序（去哪帧找它）——"听到尖叫，聚焦相关帧"
 * K/V 是**帧序列**（含时序），故能区分"切菜"与"砍人"（单帧做不到）
 * 返回 `attention` 供解释：直接看模型关注了哪几帧
-* 本模块只做融合层；VideoMAE 抽时序特征 (6.1) 与 Lightning 训练 (6.3) 为独立步骤
+* 本模块只做融合层；VideoMAE 抽时序特征 (6.1) 仍为独立步骤（待做）
 
 测试：`tests/test_cross_attention.py`（形状 / 2维guide / 注意力归一 / 概率范围，CPU 实测通过）
+
+### 训练 (6.3)
+
+模块：`sentinelai/train/` — PyTorch Lightning 训练循环
+
+```text
+train/datamodule.py  FusionFeaturesDataModule + 合成数据生成器（video/guide/label）
+train/lit_module.py  LitCrossAttention: BCEWithLogitsLoss + AdamW + val AUC/acc
+train/train.py       入口：python -m sentinelai.train.train
+```
+
+* 多标签 BCE-with-logits，每类独立 sigmoid
+* 验证指标：val_loss / val_acc / 逐类平均 AUC
+* 合成数据 CPU 实跑收敛：val_auc 0.49 → 1.00（证明训练循环正确）
+* 接真实数据只需把 `make_synthetic_crossattn` 换成缓存的专家特征，训练代码不变
 
 ---
 
