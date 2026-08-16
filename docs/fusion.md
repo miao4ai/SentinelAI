@@ -94,6 +94,30 @@ experts' raw outputs
 Fusion can happen at five depths along the pipeline. Earlier = more information but
 higher-dimensional/harder; later = interpretable/robust but lossy.
 
+Every expert runs the same forward pass; each fusion position taps a different
+column of it. The three modalities are concatenated at **one** column, then a
+fusion model maps the joined vector to the verdict:
+
+```
+             ①raw        ②embedding    ③logits      ④decision     ⑤vote
+              │              │             │             │            │
+  visual:  pixels ──▶ embedding ──▶ logits ──▶  probability ──▶ 0/1 ┐
+  audio :  waveform ─▶ embedding ──▶ logits ──▶  probability ──▶ 0/1 ┤
+  text  :  tokens ──▶ embedding ──▶ logits ──▶  probability ──▶ 0/1 ┘
+              │           (Linear head)   (sigmoid)  (≥0.5)          │
+              └── concat the 3 modalities at ONE column ──▶ fusion model ──▶ verdict
+
+   earliest ───────────────────────────────────────────────────▶ latest
+   most info / hardest to train            most robust / interpretable / lossiest
+```
+
+- **① raw** taps *before* any backbone — pixels / waveform / tokens.
+- **② embedding** taps after the backbone, before the classification head.
+- **③ logits** taps after the head's `Linear`, *before* `sigmoid` (keeps the
+  unbounded confidence margin that sigmoid saturation would compress).
+- **④ decision** taps the post-`sigmoid` probabilities.
+- **⑤ vote** taps each expert's final 0/1.
+
 | # | Position | Fuse | Method | Code |
 |---|---|---|---|---|
 | ① | **raw / input** | pre-backbone signals (pixels/waveform/tokens) | deep MLP | `early-mlp` |
