@@ -30,6 +30,11 @@ _RELIABILITY: dict[str, float] = {"text": 1.2, "visual": 0.9, "audio": 0.6}
 # Per-modality embedding width — scaled-down stand-ins for the real 2048/768/768.
 _EMB_DIM: dict[str, int] = {"visual": 48, "audio": 24, "text": 24}
 
+# Per-modality *raw*/input width — the widest, messiest tier (position ①). Stands
+# in for pre-backbone signals (pixels / waveform / tokens): the label information
+# is present but entangled by a nonlinearity, so only a deeper model can decode it.
+_RAW_DIM: dict[str, int] = {"visual": 128, "audio": 64, "text": 64}
+
 
 def make_synthetic_dataset(
     n_samples: int = 3000,
@@ -46,7 +51,13 @@ def make_synthetic_dataset(
       3. **Scores** = sigmoid(logits) — the lossy, decision-level view.
       4. **Embedding** = the logits copied into the first dims + pure-noise dims +
          one extra label-correlated dim that exists only here (upstream-only signal).
-      5. Concatenate each level across the three modalities.
+      5. **Raw** (position ①) = a wide, entangled tanh mixing carrying the most
+         label signal (two extra dims) — only a deeper model decodes it.
+      6. Concatenate each level across the three modalities.
+
+    Information is monotonically non-increasing downstream:
+    ``raw ⊇ embedding ⊇ logits ⊇ decision``, so earlier fusion has strictly more to
+    work with — at the cost of width and (for raw) a nonlinearity to untangle.
     """
     rng = np.random.default_rng(seed)
     num_cat = len(CANONICAL_CATEGORIES)
@@ -55,7 +66,9 @@ def make_synthetic_dataset(
     y = (rng.random(n_samples) < p_violating).astype(int)
     active_cat = rng.integers(0, num_cat, size=n_samples)
     violating = y.astype(bool)
+    signed = (2 * y - 1).astype(float)   # -1 / +1 label direction
 
+    raw_blocks: list[np.ndarray] = []
     emb_blocks: list[np.ndarray] = []
     logit_blocks: list[np.ndarray] = []
     score_blocks: list[np.ndarray] = []
@@ -76,14 +89,28 @@ def make_synthetic_dataset(
         #    extra dim carries label signal that the logits/scores never saw.
         embedding = rng.normal(0.0, 1.0, size=(n_samples, dim))
         embedding[:, :num_cat] += logits
-        embedding[:, num_cat] += (2 * y - 1) * reliability * 1.5 + rng.normal(0.0, 0.5, size=n_samples)
+        embedding[:, num_cat] += signed * reliability * 1.5 + rng.normal(0.0, 0.5, size=n_samples)
 
+        # 5. raw: a fixed random *nonlinear* mixing of the richest signal — the
+        #    logits plus TWO extra label-correlated dims (one more than embedding).
+        #    tanh entangles it, so a shallow/linear head can't read it; a deeper MLP
+        #    can. This is the "pre-backbone, everything's here but messy" tier.
+        raw_dim = _RAW_DIM[modality]
+        signal = np.concatenate(
+            [logits, (signed * reliability)[:, None], (signed * reliability * 1.2)[:, None]],
+            axis=1,
+        )
+        mix = rng.normal(size=(signal.shape[1], raw_dim))
+        raw = np.tanh(signal @ mix) + rng.normal(0.0, 0.5, size=(n_samples, raw_dim))
+
+        raw_blocks.append(raw)
         emb_blocks.append(embedding)
         logit_blocks.append(logits)
         score_blocks.append(scores)
 
-    # 5. concatenate modalities along the feature axis for each level.
+    # 6. concatenate modalities along the feature axis for each level.
     return FusionDataset(
+        X_raw=np.concatenate(raw_blocks, axis=1),
         X_embedding=np.concatenate(emb_blocks, axis=1),
         X_logits=np.concatenate(logit_blocks, axis=1),
         X_decision=np.concatenate(score_blocks, axis=1),

@@ -24,8 +24,9 @@ def test_dataset_shapes_are_consistent() -> None:
     # logits and decision are 3 modalities x 3 canonical categories = 9 dims each.
     assert ds.X_logits.shape[1] == 9
     assert ds.X_decision.shape[1] == 9
-    # embedding is wider than logits (it carries extra dims).
-    assert ds.X_embedding.shape[1] > ds.X_logits.shape[1]
+    # width grows as we go earlier: raw > embedding > logits.
+    assert ds.X_raw.shape[0] == n
+    assert ds.X_raw.shape[1] > ds.X_embedding.shape[1] > ds.X_logits.shape[1]
 
 
 def test_split_is_disjoint_and_covers_all() -> None:

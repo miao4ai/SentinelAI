@@ -35,6 +35,7 @@ from .evaluate import binary_metrics
 # The three feature "levels" a strategy can read, and the dataset attribute each
 # one maps to. Keeping this explicit makes a strategy = (which level, which model).
 _LEVEL_ATTR = {
+    "raw": "X_raw",
     "embedding": "X_embedding",
     "logits": "X_logits",
     "decision": "X_decision",
@@ -51,6 +52,7 @@ class FusionDataset:
     fairly — only the input representation changes between strategies.
     """
 
+    X_raw: np.ndarray
     X_embedding: np.ndarray
     X_logits: np.ndarray
     X_decision: np.ndarray
@@ -69,7 +71,9 @@ class FusionDataset:
         idx = rng.permutation(len(self))
         cut = int(len(self) * (1 - test_frac))
         tr, te = idx[:cut], idx[cut:]
-        sub = lambda i: FusionDataset(self.X_embedding[i], self.X_logits[i], self.X_decision[i], self.y[i])
+        sub = lambda i: FusionDataset(
+            self.X_raw[i], self.X_embedding[i], self.X_logits[i], self.X_decision[i], self.y[i]
+        )
         return sub(tr), sub(te)
 
 
@@ -181,12 +185,26 @@ def default_strategies() -> list[FusionStrategy]:
 
 
 def all_strategies() -> list[FusionStrategy]:
-    """The untrained voting baseline plus the three trained strategies (for reports)."""
+    """All five fusion positions, ordered earliest -> latest, for the full report.
+
+    Position ① (early/raw fusion) uses a deeper MLP because the raw tier's signal
+    is entangled by a nonlinearity — a shallow head can't untangle it, which is
+    exactly why early fusion needs more model capacity in practice.
+    """
+    from sklearn.neural_network import MLPClassifier
+
+    early = FusionStrategy(
+        "early-mlp", "raw",
+        MLPClassifier(hidden_layer_sizes=(256, 128), max_iter=1200, random_state=0),
+        structure="concat 3 experts' raw/input features -> Linear -> ReLU(256) -> ReLU(128) -> 2",
+    )
     baseline = FusionStrategy(
         "mean-voting", "decision", _MeanVoteBaseline(),
         structure="untrained: flag if max of concatenated decision scores >= 0.5",
     )
-    return [baseline, *default_strategies()]
+    # earliest -> latest: raw, embedding, logits, decision(tree), decision(vote).
+    embedding, logit, decision = default_strategies()[::-1]
+    return [early, embedding, logit, decision, baseline]
 
 
 def compare_strategies(
