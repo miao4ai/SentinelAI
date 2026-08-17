@@ -1,23 +1,26 @@
-"""Compare fusion at three pipeline depths and report metrics.
+"""Compare fusion at different pipeline depths and report metrics.
 
 The same three experts can be fused at different stages, and *where* you fuse is a
 real modelling choice with different trade-offs. This module makes that choice
 measurable: it trains one fusion model per depth on the SAME samples and reports
 Precision / Recall / F1 / AUC side by side.
 
-The depths (earliest → latest) and their default fusion models:
+The depths (earliest → latest) and their fusion models:
 
-    embedding   concat each expert's backbone feature vector  -> MLP
-    logits      concat each expert's pre-activation logits     -> MLP
-    decision    concat each expert's final category scores      -> Decision Tree
+    raw         concat each expert's raw/input features  -> deep MLP  (early/feature)
+    embedding   concat each expert's backbone embedding  -> MLP       (intermediate)
+    decision    concat each expert's final category scores -> Decision Tree (late)
 
 plus an untrained **mean-voting baseline** at the decision level, to show what the
-training actually buys over "just threshold the averaged scores".
+training actually buys over "just threshold the averaged scores". (An even earlier
+*signal/data-level* fusion — combining the raw data streams before any feature
+extraction — is discussed in ``docs/fusion.md`` but not benchmarked here, as it
+needs real heterogeneous data and a joint encoder rather than separable features.)
 
 Rule of thumb the comparison usually shows: earlier fusion keeps more information
-(embeddings carry signal the logits/scores have thrown away) but is higher-
-dimensional and can overfit with little data; later fusion is low-dimensional,
-fast and interpretable (a tree on 9 scores) but cannot recover lost detail.
+(raw carries signal the embeddings/scores have thrown away) but is higher-
+dimensional and harder to train; later fusion is low-dimensional, fast and
+interpretable (a tree on 9 scores) but cannot recover lost detail.
 
 ``scikit-learn`` powers the classifiers (CPU, no GPU), so the whole comparison
 runs on synthetic features without touching a real model — see ``synthetic.py``.
@@ -37,7 +40,6 @@ from .evaluate import binary_metrics
 _LEVEL_ATTR = {
     "raw": "X_raw",
     "embedding": "X_embedding",
-    "logits": "X_logits",
     "decision": "X_decision",
 }
 
@@ -54,7 +56,6 @@ class FusionDataset:
 
     X_raw: np.ndarray
     X_embedding: np.ndarray
-    X_logits: np.ndarray
     X_decision: np.ndarray
     y: np.ndarray
 
@@ -72,7 +73,7 @@ class FusionDataset:
         cut = int(len(self) * (1 - test_frac))
         tr, te = idx[:cut], idx[cut:]
         sub = lambda i: FusionDataset(
-            self.X_raw[i], self.X_embedding[i], self.X_logits[i], self.X_decision[i], self.y[i]
+            self.X_raw[i], self.X_embedding[i], self.X_decision[i], self.y[i]
         )
         return sub(tr), sub(te)
 
@@ -156,10 +157,10 @@ class FusionStrategy:
 
 
 def default_strategies() -> list[FusionStrategy]:
-    """The three trained strategies from the brief, each with its structure note.
+    """The trained strategies, each with its structure note.
 
     Model choice is matched to dimensionality: a shallow Decision Tree suits the
-    tiny, interpretable decision vector; MLPs suit the richer logit/embedding
+    tiny, interpretable decision vector; MLPs suit the richer embedding/raw
     vectors. sklearn is imported here (lazily) so importing this module stays cheap.
     """
     from sklearn.neural_network import MLPClassifier
@@ -167,44 +168,36 @@ def default_strategies() -> list[FusionStrategy]:
 
     return [
         FusionStrategy(
-            "decision-tree", "decision",
-            DecisionTreeClassifier(max_depth=5, random_state=0),
-            structure="concat 3 experts' final category scores -> DecisionTree(max_depth=5)",
-        ),
-        FusionStrategy(
-            "logit-mlp", "logits",
-            MLPClassifier(hidden_layer_sizes=(64,), max_iter=800, random_state=0),
-            structure="concat 3 experts' pre-activation logits -> Linear -> ReLU(64) -> Linear -> 2",
+            "early-mlp", "raw",
+            MLPClassifier(hidden_layer_sizes=(256, 128), max_iter=1200, random_state=0),
+            structure="concat 3 experts' raw/input features -> Linear -> ReLU(256) -> ReLU(128) -> 2",
         ),
         FusionStrategy(
             "embedding-mlp", "embedding",
             MLPClassifier(hidden_layer_sizes=(128,), max_iter=800, random_state=0),
             structure="concat 3 experts' backbone embeddings -> Linear -> ReLU(128) -> Linear -> 2",
         ),
+        FusionStrategy(
+            "decision-tree", "decision",
+            DecisionTreeClassifier(max_depth=5, random_state=0),
+            structure="concat 3 experts' final category scores -> DecisionTree(max_depth=5)",
+        ),
     ]
 
 
 def all_strategies() -> list[FusionStrategy]:
-    """All five fusion positions, ordered earliest -> latest, for the full report.
+    """The trained strategies plus the untrained voting baseline, earliest -> latest.
 
-    Position ① (early/raw fusion) uses a deeper MLP because the raw tier's signal
-    is entangled by a nonlinearity — a shallow head can't untangle it, which is
-    exactly why early fusion needs more model capacity in practice.
+    early-mlp uses a deeper MLP because the raw tier's signal is entangled by a
+    nonlinearity — a shallow head can't untangle it, which is exactly why early
+    fusion needs more model capacity in practice.
     """
-    from sklearn.neural_network import MLPClassifier
-
-    early = FusionStrategy(
-        "early-mlp", "raw",
-        MLPClassifier(hidden_layer_sizes=(256, 128), max_iter=1200, random_state=0),
-        structure="concat 3 experts' raw/input features -> Linear -> ReLU(256) -> ReLU(128) -> 2",
-    )
     baseline = FusionStrategy(
         "mean-voting", "decision", _MeanVoteBaseline(),
         structure="untrained: flag if max of concatenated decision scores >= 0.5",
     )
-    # earliest -> latest: raw, embedding, logits, decision(tree), decision(vote).
-    embedding, logit, decision = default_strategies()[::-1]
-    return [early, embedding, logit, decision, baseline]
+    # earliest -> latest: raw, embedding, decision(tree), decision(vote).
+    return [*default_strategies(), baseline]
 
 
 def compare_strategies(

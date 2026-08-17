@@ -10,10 +10,10 @@ The generator is built to make the comparison *interesting* rather than trivial:
 
 * Modalities have different **reliability** (text > visual > audio), mirroring the
   voting weights — so a model can learn to trust them unequally.
-* The downstream levels are **lossy** views of the upstream ones: scores come from
-  logits, and the embedding carries one extra label-correlated dimension that
-  never reaches the logits/scores. So earlier-fusion strategies have strictly more
-  signal to exploit — the comparison can reveal whether they actually use it.
+* The tiers are **nested, lossy** views: ``raw ⊇ embedding ⊇ decision``. The raw
+  tier carries the most label signal (entangled by a nonlinearity), the embedding
+  a bit less, the decision scores least. So earlier-fusion strategies have strictly
+  more signal to exploit — the comparison reveals whether they actually use it.
 """
 
 from __future__ import annotations
@@ -56,8 +56,10 @@ def make_synthetic_dataset(
       6. Concatenate each level across the three modalities.
 
     Information is monotonically non-increasing downstream:
-    ``raw ⊇ embedding ⊇ logits ⊇ decision``, so earlier fusion has strictly more to
-    work with — at the cost of width and (for raw) a nonlinearity to untangle.
+    ``raw ⊇ embedding ⊇ decision``, so earlier fusion has strictly more to work with
+    — at the cost of width and (for raw) a nonlinearity to untangle. (Logits are
+    still computed internally to derive scores/embeddings, just not exported as a
+    separate fusion tier.)
     """
     rng = np.random.default_rng(seed)
     num_cat = len(CANONICAL_CATEGORIES)
@@ -70,7 +72,6 @@ def make_synthetic_dataset(
 
     raw_blocks: list[np.ndarray] = []
     emb_blocks: list[np.ndarray] = []
-    logit_blocks: list[np.ndarray] = []
     score_blocks: list[np.ndarray] = []
 
     for modality, reliability in _RELIABILITY.items():
@@ -105,14 +106,12 @@ def make_synthetic_dataset(
 
         raw_blocks.append(raw)
         emb_blocks.append(embedding)
-        logit_blocks.append(logits)
         score_blocks.append(scores)
 
     # 6. concatenate modalities along the feature axis for each level.
     return FusionDataset(
         X_raw=np.concatenate(raw_blocks, axis=1),
         X_embedding=np.concatenate(emb_blocks, axis=1),
-        X_logits=np.concatenate(logit_blocks, axis=1),
         X_decision=np.concatenate(score_blocks, axis=1),
         y=y,
     )

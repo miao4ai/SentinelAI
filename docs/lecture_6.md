@@ -162,11 +162,10 @@ ffmpeg -i video.mp4 -f s16le -ac 1 -ar 16000 -
 
 | 位置 | 融合什么 | 方法举例 | 我们的实现 |
 |---|---|---|---|
-| ① 输入层 (early) | 原始帧+波形+文本 | 直接拼（很难，少用） | ❌ 未做 |
-| ② Embedding 层 | 各专家 backbone 特征 | Concat → MLP；**cross-attention** | ✅ `embedding-mlp` / `cross_attention.py` |
-| ③ Logits 层 | 分类头前的 logits | Concat → MLP | ✅ `logit-mlp` |
-| ④ 决策/分数层 | sigmoid 后的概率 | 决策树 / 加权投票 | ✅ `decision-tree` |
-| ⑤ 标签/投票层 (late) | 各专家 0/1 | 软/硬投票 ensemble | ✅ `mean-voting` |
+| ⓪ 信号/数据层 | 原始数据流（编码前） | 联合编码器（异构信号，难） | ❌ 概念性，不 benchmark |
+| ① Early / feature | 各模态原始特征 | Concat → 深 MLP | ✅ `early-mlp` |
+| ② Intermediate / embedding | 各专家 backbone 特征 | Concat → MLP；**cross-attention** | ✅ `embedding-mlp` / `cross_attention.py` |
+| ③ Late / decision | sigmoid 后概率 / 0-1 票 | 决策树 / 加权投票 | ✅ `decision-tree` / `mean-voting` |
 
 **按方法分**：
 - **拼接 + MLP**：可学跨模态交互，但要训练
@@ -175,7 +174,7 @@ ffmpeg -i video.mp4 -f s16le -ac 1 -ar 16000 -
 - **Cross-Attention 深度融合**：音频/文本作 Q，视频帧作 K/V，"听到尖叫时关注哪几帧"
 - **启发式熔断**：命中违禁词直接判违规、跳过融合（快车道）
 
-**实验结论**（`docs/experiment_1.md`，合成数据）：**越早融合越好**（embedding-mlp F1 0.988 > logit 0.973 > decision 0.944）；投票基线 AUC 高但 F1 差（排序好、阈值差）。
+**实验结论**（`docs/fusion.md` / `docs/experiment_1.md`，合成数据）：**越早融合越好**（early-mlp F1 1.00 > embedding-mlp 0.985 > decision-tree 0.943）；投票基线 AUC 高但 F1 差（排序好、阈值差）。
 
 ---
 
@@ -186,7 +185,7 @@ ffmpeg -i video.mp4 -f s16le -ac 1 -ar 16000 -
        ├─ 抽音(ffmpeg,16k) ─ mel谱 ─ AST ─→ 声音事件      → 音频 0/1
        └─ ASR/OCR/评论/meta ─ 文本模型 ─→ 违规语义         → 文本 0/1
                                    │
-                        ①②③④⑤ 五个位置任选其一融合
+                     ⓪信号 / ①early / ②embedding / ③late 任选其一融合
                                    ↓
                           最终审核判定 0/1 (+ 冲突标记)
 ```

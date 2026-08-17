@@ -72,7 +72,7 @@ Per canonical category, combine the **present** modalities' scores:
 
 ### MLP fusion (trainable) — `MLPFusion`
 
-Concatenate each expert's **embedding or logits** into one vector →
+Concatenate each expert's **last-layer embedding** into one vector →
 `Linear → ReLU → Dropout → Linear → logits`. Learns cross-modal interactions that
 fixed weights can't, but must be trained on labelled clips first. Kept in a
 separate module so the voting path stays torch-free.
@@ -89,46 +89,47 @@ experts' raw outputs
 
 ---
 
-## 4. Where to fuse — the five positions
+## 4. Where to fuse — from signal-level to late
 
-Fusion can happen at five depths along the pipeline. Earlier = more information but
-higher-dimensional/harder; later = interpretable/robust but lossy.
-
-Every expert runs the same forward pass; each fusion position taps a different
-column of it. The three modalities are concatenated at **one** column, then a
-fusion model maps the joined vector to the verdict:
+Fusion can happen at several depths. Earlier = more information but
+higher-dimensional/harder; later = interpretable/robust but lossy. The standard
+taxonomy, earliest → latest:
 
 ```
-             ①raw        ②embedding    ③logits      ④decision     ⑤vote
-              │              │             │             │            │
-  visual:  pixels ──▶ embedding ──▶ logits ──▶  probability ──▶ 0/1 ┐
-  audio :  waveform ─▶ embedding ──▶ logits ──▶  probability ──▶ 0/1 ┤
-  text  :  tokens ──▶ embedding ──▶ logits ──▶  probability ──▶ 0/1 ┘
-              │           (Linear head)   (sigmoid)  (≥0.5)          │
-              └── concat the 3 modalities at ONE column ──▶ fusion model ──▶ verdict
+   ⓪ signal / data-level — fuse the raw data streams themselves, before ANY
+      feature extraction. Earliest & most powerful in theory, but heterogeneous
+      signals (pixels vs waveform vs tokens) need a joint encoder — rarely
+      practical, so we describe it but do NOT benchmark it.
+            │
+            ▼
+              ① early / feature     ② intermediate           ③ late / decision
+                     │                    │                          │
+  visual:  raw features ─────▶ embedding ─────▶  scores ──▶ 0/1 ┐
+  audio :  raw features ─────▶ embedding ─────▶  scores ──▶ 0/1 ┤
+  text  :  raw features ─────▶ embedding ─────▶  scores ──▶ 0/1 ┘
+                     │                    │                          │
+                     └── concat the 3 modalities at ONE stage ──▶ fusion model ──▶ verdict
 
-   earliest ───────────────────────────────────────────────────▶ latest
-   most info / hardest to train            most robust / interpretable / lossiest
+   earliest ──────────────────────────────────────────────────▶ latest
+   most info / hardest to train              most robust / interpretable / lossiest
 ```
 
-- **① raw** taps *before* any backbone — pixels / waveform / tokens.
-- **② embedding** taps after the backbone, before the classification head.
-- **③ logits** taps after the head's `Linear`, *before* `sigmoid` (keeps the
-  unbounded confidence margin that sigmoid saturation would compress).
-- **④ decision** taps the post-`sigmoid` probabilities.
-- **⑤ vote** taps each expert's final 0/1.
+- **⓪ signal / data-level** — combine raw data before any encoding. Conceptual
+  here; not benchmarked (needs real heterogeneous data + a joint encoder).
+- **① early / feature** — each modality extracts features, concatenate them, one
+  deep joint model learns the rest.
+- **② intermediate / embedding** — fuse the backbone embeddings; also the home of
+  **cross-attention** (`cross_attention.py`), where audio/text query the video
+  frames — "when I hear a scream, attend to *these* frames".
+- **③ late / decision** — combine per-category scores (a tree) or per-expert
+  0/1 votes (weighted voting).
 
 | # | Position | Fuse | Method | Code |
 |---|---|---|---|---|
-| ① | **raw / input** | pre-backbone signals (pixels/waveform/tokens) | deep MLP | `early-mlp` |
-| ② | **embedding** | backbone feature vectors | MLP / cross-attention | `embedding-mlp`, `cross_attention.py` |
-| ③ | **logits** | pre-activation logits | MLP | `logit-mlp` |
-| ④ | **decision** | per-category probabilities | decision tree | `decision-tree` |
-| ⑤ | **vote / late** | each expert's 0/1 | weighted voting | `mean-voting` |
-
-Position ② also has a **deep** variant beyond concatenation: **cross-attention**
-(`cross_attention.py`), where audio/text act as the query and video frames as
-key/value — "when I hear a scream, attend to *these* frames".
+| ⓪ | **signal / data-level** | raw data streams (pre-encoding) | joint encoder | — (conceptual) |
+| ① | **early / feature** | per-modality raw features | deep MLP | `early-mlp` |
+| ② | **intermediate / embedding** | backbone embeddings | MLP / cross-attention | `embedding-mlp`, `cross_attention.py` |
+| ③ | **late / decision** | per-category scores / 0-1 votes | decision tree / weighted voting | `decision-tree`, `mean-voting` |
 
 ---
 
@@ -136,10 +137,10 @@ key/value — "when I hear a scream, attend to *these* frames".
 
 `compare.py` trains one model per position on the **same** train/test split and
 reports Precision / Recall / F1 / AUC. `synthetic.py` generates correlated
-multimodal features at all five tiers so the framework runs with **no GPU and no
-real data** (the "synthetic-first" path). By construction the tiers are nested
-`raw ⊇ embedding ⊇ logits ⊇ decision`, so earlier fusion has strictly more signal —
-the experiment measures whether each model actually uses it.
+multimodal features at each tier so the framework runs with **no GPU and no real
+data** (the "synthetic-first" path). By construction the tiers are nested
+`raw ⊇ embedding ⊇ decision`, so earlier fusion has strictly more signal — the
+experiment measures whether each model actually uses it.
 
 Run it:
 
@@ -151,16 +152,15 @@ Result (synthetic):
 
 | strategy | position | Precision | Recall | F1 | AUC |
 |---|---|---|---|---|---|
-| **early-mlp** | ① raw | **1.000** | **1.000** | **1.000** | **1.000** |
-| embedding-mlp | ② embedding | 0.983 | 0.986 | 0.985 | 0.999 |
-| logit-mlp | ③ logits | 0.983 | 0.979 | 0.981 | 0.998 |
-| decision-tree | ④ decision | 0.945 | 0.942 | 0.943 | 0.957 |
-| mean-voting | ⑤ vote | 0.388 | 1.000 | 0.559 | 0.988 |
+| **early-mlp** | ① early / feature | **1.000** | **1.000** | **1.000** | **1.000** |
+| embedding-mlp | ② intermediate | 0.983 | 0.986 | 0.985 | 0.999 |
+| decision-tree | ③ late / decision | 0.945 | 0.942 | 0.943 | 0.957 |
+| mean-voting | ③ late (untrained) | 0.388 | 1.000 | 0.559 | 0.988 |
 
 **Takeaways**
 
-- **Earlier fusion wins** (① > ② > ③ > ④ > ⑤) — it keeps information downstream
-  levels discarded. Position ① needs a **deeper** MLP because its raw features are
+- **Earlier fusion wins** (① > ② > ③) — it keeps information the downstream levels
+  discarded. Position ① needs a **deeper** MLP because its raw features are
   entangled by a nonlinearity (mirrors real early fusion needing more capacity).
 - **AUC vs F1 can disagree**: `mean-voting` has a poor F1 (0.559) but high AUC
   (0.988) — its ranking is good, only the fixed 0.5 threshold is bad. Never judge a
@@ -187,6 +187,6 @@ Result (synthetic):
 
 1. **Normalise** each expert to canonical categories, pool over time with **max**.
 2. **Short-circuit** on near-certain heuristics (banned words).
-3. **Fuse** the rest — weighted voting (default) or a trained model at one of five
-   depths; earlier is more powerful but harder.
+3. **Fuse** the rest — weighted voting (default) or a trained model at one of the
+   fusion depths (early / intermediate / late); earlier is more powerful but harder.
 4. **Evaluate** with P/R/F1/AUC and triage with cross-modal conflict detection.
