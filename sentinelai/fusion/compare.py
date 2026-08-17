@@ -5,22 +5,25 @@ real modelling choice with different trade-offs. This module makes that choice
 measurable: it trains one fusion model per depth on the SAME samples and reports
 Precision / Recall / F1 / AUC side by side.
 
-The depths (earliest → latest) and their fusion models:
+The positions (earliest → latest) and their fusion models:
 
-    raw         concat each expert's raw/input features  -> deep MLP  (early/feature)
-    embedding   concat each expert's backbone embedding  -> MLP       (intermediate)
-    decision    concat each expert's final category scores -> Decision Tree (late)
+    early       one joint block mixing ALL modalities' raw signal -> deep MLP  (input-level)
+    embedding   concat each expert's encoded features             -> MLP       (intermediate)
+    decision    concat each expert's final category scores        -> Decision Tree (late)
 
 plus an untrained **mean-voting baseline** at the decision level, to show what the
-training actually buys over "just threshold the averaged scores". (An even earlier
-*signal/data-level* fusion — combining the raw data streams before any feature
-extraction — is discussed in ``docs/fusion.md`` but not benchmarked here, as it
-needs real heterogeneous data and a joint encoder rather than separable features.)
+training actually buys over "just threshold the averaged scores".
+
+**Early fusion** here is the real thing: the raw signals of all modalities are
+entangled in one block, so its model must jointly *perceive and fuse* — which is
+why it needs a deeper network. (Contrast the CLIP-style **coordinated
+representation** — separate encoders aligned by contrastive learning — which is a
+different intermediate-level mechanism, implemented in ``clip_screener.py`` and
+discussed in ``docs/fusion.md``, not benchmarked here.)
 
 Rule of thumb the comparison usually shows: earlier fusion keeps more information
-(raw carries signal the embeddings/scores have thrown away) but is higher-
-dimensional and harder to train; later fusion is low-dimensional, fast and
-interpretable (a tree on 9 scores) but cannot recover lost detail.
+but is higher-dimensional and harder to train; later fusion is low-dimensional,
+fast and interpretable (a tree on 9 scores) but cannot recover lost detail.
 
 ``scikit-learn`` powers the classifiers (CPU, no GPU), so the whole comparison
 runs on synthetic features without touching a real model — see ``synthetic.py``.
@@ -38,7 +41,7 @@ from .evaluate import binary_metrics
 # The three feature "levels" a strategy can read, and the dataset attribute each
 # one maps to. Keeping this explicit makes a strategy = (which level, which model).
 _LEVEL_ATTR = {
-    "raw": "X_raw",
+    "early": "X_early",
     "embedding": "X_embedding",
     "decision": "X_decision",
 }
@@ -54,7 +57,7 @@ class FusionDataset:
     fairly — only the input representation changes between strategies.
     """
 
-    X_raw: np.ndarray
+    X_early: np.ndarray
     X_embedding: np.ndarray
     X_decision: np.ndarray
     y: np.ndarray
@@ -73,7 +76,7 @@ class FusionDataset:
         cut = int(len(self) * (1 - test_frac))
         tr, te = idx[:cut], idx[cut:]
         sub = lambda i: FusionDataset(
-            self.X_raw[i], self.X_embedding[i], self.X_decision[i], self.y[i]
+            self.X_early[i], self.X_embedding[i], self.X_decision[i], self.y[i]
         )
         return sub(tr), sub(te)
 
@@ -159,23 +162,24 @@ class FusionStrategy:
 def default_strategies() -> list[FusionStrategy]:
     """The trained strategies, each with its structure note.
 
-    Model choice is matched to dimensionality: a shallow Decision Tree suits the
-    tiny, interpretable decision vector; MLPs suit the richer embedding/raw
-    vectors. sklearn is imported here (lazily) so importing this module stays cheap.
+    Model choice is matched to the tier: a shallow Decision Tree suits the tiny,
+    interpretable decision vector; a plain MLP suits the clean encoded features; a
+    deeper MLP is needed for the entangled early/input block. sklearn is imported
+    here (lazily) so importing this module stays cheap.
     """
     from sklearn.neural_network import MLPClassifier
     from sklearn.tree import DecisionTreeClassifier
 
     return [
         FusionStrategy(
-            "early-mlp", "raw",
+            "early-fusion", "early",
             MLPClassifier(hidden_layer_sizes=(256, 128), max_iter=1200, random_state=0),
-            structure="concat 3 experts' raw/input features -> Linear -> ReLU(256) -> ReLU(128) -> 2",
+            structure="ONE joint block of all modalities' raw signal -> Linear -> ReLU(256) -> ReLU(128) -> 2",
         ),
         FusionStrategy(
             "embedding-mlp", "embedding",
             MLPClassifier(hidden_layer_sizes=(128,), max_iter=800, random_state=0),
-            structure="concat 3 experts' backbone embeddings -> Linear -> ReLU(128) -> Linear -> 2",
+            structure="concat 3 experts' encoded features -> Linear -> ReLU(128) -> Linear -> 2",
         ),
         FusionStrategy(
             "decision-tree", "decision",
@@ -188,15 +192,15 @@ def default_strategies() -> list[FusionStrategy]:
 def all_strategies() -> list[FusionStrategy]:
     """The trained strategies plus the untrained voting baseline, earliest -> latest.
 
-    early-mlp uses a deeper MLP because the raw tier's signal is entangled by a
-    nonlinearity — a shallow head can't untangle it, which is exactly why early
-    fusion needs more model capacity in practice.
+    early-fusion uses a deeper MLP because its input block entangles all modalities
+    through a nonlinearity — a shallow head can't perceive+untangle it, which is
+    exactly why early fusion needs more model capacity in practice.
     """
     baseline = FusionStrategy(
         "mean-voting", "decision", _MeanVoteBaseline(),
         structure="untrained: flag if max of concatenated decision scores >= 0.5",
     )
-    # earliest -> latest: raw, embedding, decision(tree), decision(vote).
+    # earliest -> latest: early, embedding, decision(tree), decision(vote).
     return [*default_strategies(), baseline]
 
 

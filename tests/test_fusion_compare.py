@@ -1,4 +1,4 @@
-"""Tests for the fusion-depth comparison framework on synthetic data.
+"""Tests for the fusion-position comparison framework on synthetic data.
 
 Needs numpy + scikit-learn (no torch, no GPU). Verifies the dataset shapes, the
 shared-split contract, and that the strategies actually learn on the synthetic
@@ -16,13 +16,13 @@ def test_dataset_shapes_are_consistent() -> None:
     ds = make_synthetic_dataset(n_samples=200, seed=1)
     n = len(ds)
     assert n == 200
-    assert ds.X_raw.shape[0] == n
+    assert ds.X_early.shape[0] == n
     assert ds.X_embedding.shape[0] == n
     assert ds.X_decision.shape[0] == n
     # decision is 3 modalities x 3 canonical categories = 9 dims.
     assert ds.X_decision.shape[1] == 9
-    # width grows as we go earlier: raw > embedding > decision.
-    assert ds.X_raw.shape[1] > ds.X_embedding.shape[1] > ds.X_decision.shape[1]
+    # the early/input block is one wide joint tensor, wider than the rest.
+    assert ds.X_early.shape[1] > ds.X_embedding.shape[1] > ds.X_decision.shape[1]
 
 
 def test_split_is_disjoint_and_covers_all() -> None:
@@ -34,10 +34,10 @@ def test_split_is_disjoint_and_covers_all() -> None:
 
 
 def test_all_strategies_learn_the_signal() -> None:
-    """On easy synthetic data every fusion depth beats chance by a wide margin."""
+    """On easy synthetic data every fusion position beats chance by a wide margin."""
     ds = make_synthetic_dataset(n_samples=2000, seed=0)
     results = compare_strategies(ds, seed=0)
-    assert set(results) == {"early-mlp", "embedding-mlp", "decision-tree"}
+    assert set(results) == {"early-fusion", "embedding-mlp", "decision-tree"}
     for name, m in results.items():
         assert m.f1 > 0.8, f"{name} underperformed: f1={m.f1:.3f}"
         assert 0.0 <= m.precision <= 1.0
@@ -45,10 +45,10 @@ def test_all_strategies_learn_the_signal() -> None:
 
 
 def test_default_strategies_read_expected_levels() -> None:
-    """The default strategies map to the pipeline depths (early -> intermediate -> late)."""
+    """The default strategies map to the pipeline positions (early -> intermediate -> late)."""
     levels = {s.name: s.level for s in default_strategies()}
     assert levels == {
-        "early-mlp": "raw",
+        "early-fusion": "early",
         "embedding-mlp": "embedding",
         "decision-tree": "decision",
     }

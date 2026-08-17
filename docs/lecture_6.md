@@ -160,12 +160,15 @@ ffmpeg -i video.mp4 -f s16le -ac 1 -ar 16000 -
 
 **按位置（深度）分** —— 越早融合信息越全但越难训，越晚越可解释但可能丢信息：
 
-| 位置 | 融合什么 | 方法举例 | 我们的实现 |
+融合有**两个维度**：**深度**（early/intermediate/late）和**表征方式**（joint 拼成一个共享向量 vs coordinated 各自编码再对齐，如 CLIP）。关键：**拼接"已编码特征"不是 early fusion**——每个模态已各自过编码器，那是 intermediate；真 early fusion 在**编码器之前**，一个联合模型同时"感知+融合"。
+
+| 位置 | 相对编码器 | 方式与方法 | 我们的实现 |
 |---|---|---|---|
-| ⓪ 信号/数据层 | 原始数据流（编码前） | 联合编码器（异构信号，难） | ❌ 概念性，不 benchmark |
-| ① Early / feature | 各模态原始特征 | Concat → 深 MLP | ✅ `early-mlp` |
-| ② Intermediate / embedding | 各专家 backbone 特征 | Concat → MLP；**cross-attention** | ✅ `embedding-mlp` / `cross_attention.py` |
-| ③ Late / decision | sigmoid 后概率 / 0-1 票 | 决策树 / 加权投票 | ✅ `decision-tree` / `mean-voting` |
+| ① Early / input | 编码器**之前** | joint：一个模型对原始数据同时感知+融合 | ✅ `early-fusion` |
+| ② Intermediate | 各自编码 → 融合特征 | joint：concat→MLP / **cross-attention**；coordinated：对比对齐（**CLIP**） | ✅ `embedding-mlp` / `cross_attention.py` / `clip_screener.py` |
+| ③ Late / decision | 各自出预测 → 合并 | 投票 / 平均 | ✅ `decision-tree` / `mean-voting` |
+
+> **CLIP = coordinated representation**（独立图/文编码器 + 对比对齐 → 共享空间比相似度），是 intermediate 层的**另一种机制**，不是 early fusion。我们的 `clip_screener.py` 正是它。
 
 **按方法分**：
 - **拼接 + MLP**：可学跨模态交互，但要训练
@@ -174,7 +177,7 @@ ffmpeg -i video.mp4 -f s16le -ac 1 -ar 16000 -
 - **Cross-Attention 深度融合**：音频/文本作 Q，视频帧作 K/V，"听到尖叫时关注哪几帧"
 - **启发式熔断**：命中违禁词直接判违规、跳过融合（快车道）
 
-**实验结论**（`docs/fusion.md` / `docs/experiment_1.md`，合成数据）：**越早融合越好**（early-mlp F1 1.00 > embedding-mlp 0.985 > decision-tree 0.943）；投票基线 AUC 高但 F1 差（排序好、阈值差）。
+**实验结论**（`docs/fusion.md` / `docs/experiment_1.md`，合成数据）：**越早融合越好**（early-fusion F1 1.00 > embedding-mlp 0.988 > decision-tree 0.944）；投票基线 AUC 高但 F1 差（排序好、阈值差）。
 
 ---
 
@@ -185,7 +188,7 @@ ffmpeg -i video.mp4 -f s16le -ac 1 -ar 16000 -
        ├─ 抽音(ffmpeg,16k) ─ mel谱 ─ AST ─→ 声音事件      → 音频 0/1
        └─ ASR/OCR/评论/meta ─ 文本模型 ─→ 违规语义         → 文本 0/1
                                    │
-                     ⓪信号 / ①early / ②embedding / ③late 任选其一融合
+              ①early(编码前联合) / ②intermediate(编码后:concat/CLIP) / ③late(决策) 任选
                                    ↓
                           最终审核判定 0/1 (+ 冲突标记)
 ```

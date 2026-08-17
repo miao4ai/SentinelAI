@@ -89,58 +89,74 @@ experts' raw outputs
 
 ---
 
-## 4. Where to fuse — from signal-level to late
+## 4. Where to fuse — the three positions (and two representation styles)
 
-Fusion can happen at several depths. Earlier = more information but
-higher-dimensional/harder; later = interpretable/robust but lossy. The standard
-taxonomy, earliest → latest:
+Fusion is described by **two independent axes**:
+
+- **WHERE (depth)**: early (input) → intermediate → late (decision).
+- **HOW (representation)**: *joint* — squash all modalities into one shared vector;
+  vs *coordinated* — keep separate per-modality encoders but **align** them in a
+  shared space by contrastive learning (this is what **CLIP** does).
+
+The key distinction people get wrong: fusing **concatenated encoded features** is
+*not* early fusion — each modality already ran its own encoder, so that is
+**intermediate**. True **early fusion** happens *before* any per-modality encoder,
+where one joint model must **perceive and fuse at the same time**.
 
 ```
-   ⓪ signal / data-level — fuse the raw data streams themselves, before ANY
-      feature extraction. Earliest & most powerful in theory, but heterogeneous
-      signals (pixels vs waveform vs tokens) need a joint encoder — rarely
-      practical, so we describe it but do NOT benchmark it.
-            │
-            ▼
-              ① early / feature     ② intermediate           ③ late / decision
-                     │                    │                          │
-  visual:  raw features ─────▶ embedding ─────▶  scores ──▶ 0/1 ┐
-  audio :  raw features ─────▶ embedding ─────▶  scores ──▶ 0/1 ┤
-  text  :  raw features ─────▶ embedding ─────▶  scores ──▶ 0/1 ┘
-                     │                    │                          │
-                     └── concat the 3 modalities at ONE stage ──▶ fusion model ──▶ verdict
+  ① EARLY / input — all modalities' raw signals entangled together; one joint
+                     model perceives AND fuses (hardest, most information)
+        pixels ┐
+        wave   ┼──▶ [ one joint model: perceive + fuse ] ──▶ verdict
+        tokens ┘
 
-   earliest ──────────────────────────────────────────────────▶ latest
-   most info / hardest to train              most robust / interpretable / lossiest
+  ② INTERMEDIATE — each modality has its OWN encoder, then fuse the features
+        pixels ─▶ [enc] ─┐   joint       : concat → MLP  /  cross-attention
+        wave   ─▶ [enc] ─┼─  or ───────────────────────────────────────▶ verdict
+        tokens ─▶ [enc] ─┘   coordinated : contrastive align (CLIP) → similarity
+
+  ③ LATE / decision — each modality makes its own call, then combine them
+        pixels ─▶ [enc→head] ─▶ 0/1 ┐
+        wave   ─▶ [enc→head] ─▶ 0/1 ┼── weighted vote / average ──▶ verdict
+        tokens ─▶ [enc→head] ─▶ 0/1 ┘
+
+   earliest ─────────────────────────────────────────────▶ latest
+   most info / hardest to train             most robust / interpretable / lossiest
 ```
 
-- **⓪ signal / data-level** — combine raw data before any encoding. Conceptual
-  here; not benchmarked (needs real heterogeneous data + a joint encoder).
-- **① early / feature** — each modality extracts features, concatenate them, one
-  deep joint model learns the rest.
-- **② intermediate / embedding** — fuse the backbone embeddings; also the home of
-  **cross-attention** (`cross_attention.py`), where audio/text query the video
-  frames — "when I hear a scream, attend to *these* frames".
-- **③ late / decision** — combine per-category scores (a tree) or per-expert
-  0/1 votes (weighted voting).
-
-| # | Position | Fuse | Method | Code |
+| # | Position | When (vs encoders) | Style & method | Our code |
 |---|---|---|---|---|
-| ⓪ | **signal / data-level** | raw data streams (pre-encoding) | joint encoder | — (conceptual) |
-| ① | **early / feature** | per-modality raw features | deep MLP | `early-mlp` |
-| ② | **intermediate / embedding** | backbone embeddings | MLP / cross-attention | `embedding-mlp`, `cross_attention.py` |
-| ③ | **late / decision** | per-category scores / 0-1 votes | decision tree / weighted voting | `decision-tree`, `mean-voting` |
+| ① | **early / input** | *before* per-modality encoders | joint — one model perceives + fuses raw data | `early-fusion` |
+| ② | **intermediate** | per-modality encoders → fuse features | **joint**: concat→MLP / cross-attention · **coordinated**: contrastive (CLIP) | `embedding-mlp`, `cross_attention.py`; `clip_screener.py` |
+| ③ | **late / decision** | per-modality predictions → combine | voting / averaging | `decision-tree`, `mean-voting` |
+
+Notes:
+- **CLIP is coordinated representation, not early fusion**: separate image/text
+  encoders are trained so matching pairs' embeddings converge; fusion is a cosine
+  similarity in that shared space. Our `clip_screener.py` is exactly this — an
+  *intermediate*, *coordinated* approach, a different mechanism from concat→MLP.
+- **cross-attention** (`cross_attention.py`) is also intermediate, but *joint* and
+  deep: audio/text query the video frames — "when I hear a scream, attend to
+  *these* frames".
 
 ---
 
 ## 5. Comparing the positions — `compare.py` + `synthetic.py`
 
 `compare.py` trains one model per position on the **same** train/test split and
-reports Precision / Recall / F1 / AUC. `synthetic.py` generates correlated
-multimodal features at each tier so the framework runs with **no GPU and no real
-data** (the "synthetic-first" path). By construction the tiers are nested
-`raw ⊇ embedding ⊇ decision`, so earlier fusion has strictly more signal — the
-experiment measures whether each model actually uses it.
+reports Precision / Recall / F1 / AUC. `synthetic.py` generates features at each
+tier so the framework runs with **no GPU and no real data**. The tiers are built to
+be genuinely different, not just wider/narrower:
+
+- **early** — ONE joint block that mixes *all three modalities' raw signal
+  together* through a nonlinearity, so a model must perceive + fuse (true early).
+- **embedding** — per-modality *encoded* feature blocks concatenated (intermediate).
+- **decision** — per-modality category scores (late).
+
+The CLIP-style *coordinated* approach is a different mechanism (contrastive
+alignment + similarity, not a classifier over concatenated features), so it is
+documented above and implemented in `clip_screener.py`, but not part of this
+numeric sweep.
 
 Run it:
 
@@ -152,21 +168,25 @@ Result (synthetic):
 
 | strategy | position | Precision | Recall | F1 | AUC |
 |---|---|---|---|---|---|
-| **early-mlp** | ① early / feature | **1.000** | **1.000** | **1.000** | **1.000** |
-| embedding-mlp | ② intermediate | 0.983 | 0.986 | 0.985 | 0.999 |
-| decision-tree | ③ late / decision | 0.945 | 0.942 | 0.943 | 0.957 |
-| mean-voting | ③ late (untrained) | 0.388 | 1.000 | 0.559 | 0.988 |
+| **early-fusion** | ① early / input | **1.000** | **1.000** | **1.000** | **1.000** |
+| embedding-mlp | ② intermediate | 0.983 | 0.993 | 0.988 | 0.999 |
+| decision-tree | ③ late / decision | 0.936 | 0.952 | 0.944 | 0.956 |
+| mean-voting | ③ late (untrained) | 0.388 | 1.000 | 0.559 | 0.994 |
 
 **Takeaways**
 
 - **Earlier fusion wins** (① > ② > ③) — it keeps information the downstream levels
-  discarded. Position ① needs a **deeper** MLP because its raw features are
-  entangled by a nonlinearity (mirrors real early fusion needing more capacity).
+  discarded. Early fusion needs a **deeper** model because its input block
+  entangles every modality, so the model must perceive *and* fuse (real early
+  fusion's central difficulty).
 - **AUC vs F1 can disagree**: `mean-voting` has a poor F1 (0.559) but high AUC
-  (0.988) — its ranking is good, only the fixed 0.5 threshold is bad. Never judge a
+  (0.994) — its ranking is good, only the fixed 0.5 threshold is bad. Never judge a
   fusion by a single-threshold P/R alone.
 - **Caveat**: synthetic data by construction favours earlier fusion; real features
   may differ. Numbers validate the framework, not a production claim.
+
+> Taxonomy references: [Multimodal Alignment and Fusion: A Survey](https://arxiv.org/pdf/2411.17040),
+> [Multimodal Classification: Current Landscape, Taxonomy and Future Directions](https://arxiv.org/pdf/2109.09020).
 
 ---
 

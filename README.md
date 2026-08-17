@@ -59,17 +59,19 @@ Modern video content can hide unsafe material in any modality: a violent frame, 
 three experts at different pipeline depths (early → intermediate → late), on a
 shared train/test split. Reproduce with `python -m sentinelai.fusion.compare`.
 
-| Fusion strategy | Fuse at | Precision | Recall | F1 | AUC |
+| Fusion strategy | Position | Precision | Recall | F1 | AUC |
 |---|---|---|---|---|---|
-| **early-mlp** | early / feature | **1.000** | **1.000** | **1.000** | **1.000** |
-| embedding-mlp | intermediate | 0.983 | 0.986 | 0.985 | 0.999 |
-| decision-tree | late / decision | 0.945 | 0.942 | 0.943 | 0.957 |
-| mean-voting (untrained) | late / decision | 0.388 | 1.000 | 0.559 | 0.988 |
+| **early-fusion** | early / input | **1.000** | **1.000** | **1.000** | **1.000** |
+| embedding-mlp | intermediate | 0.983 | 0.993 | 0.988 | 0.999 |
+| decision-tree | late / decision | 0.936 | 0.952 | 0.944 | 0.956 |
+| mean-voting (untrained) | late / decision | 0.388 | 1.000 | 0.559 | 0.994 |
 
-Earlier fusion wins (early > intermediate > late); the untrained voting baseline
-has a high AUC but poor F1 — its ranking is good, only its fixed 0.5 threshold is
-bad. _Numbers are on synthetic features validating the framework; real-data
-numbers await the feature-extraction pipeline._
+Earlier fusion wins (early > intermediate > late). **Early fusion** here is the
+real thing — all modalities' raw signals entangled in one block, so the model must
+perceive *and* fuse; intermediate fuses per-modality encoded features (concat→MLP,
+or CLIP-style coordinated alignment). The untrained voting baseline has a high AUC
+but poor F1 — good ranking, bad fixed threshold. _Numbers are on synthetic features
+validating the framework; real-data numbers await the feature-extraction pipeline._
 
 ### Verified on real data
 
