@@ -5,21 +5,21 @@ real modelling choice with different trade-offs. This module makes that choice
 measurable: it trains one fusion model per depth on the SAME samples and reports
 Precision / Recall / F1 / AUC side by side.
 
-The positions (earliest → latest) and their fusion models:
+This sweep covers four of the five fusion positions (see ``docs/fusion.md``):
 
-    early       one joint block mixing ALL modalities' raw signal -> deep MLP  (input-level)
-    embedding   concat each expert's encoded features             -> MLP       (intermediate)
-    decision    concat each expert's final category scores        -> Decision Tree (late)
+    early       one joint block mixing ALL modalities' raw signal -> deep MLP  (① input)
+    embedding   concat each expert's encoded features             -> MLP       (③ feature)
+    decision    concat each expert's final category scores        -> Decision Tree (④ decision)
 
-plus an untrained **mean-voting baseline** at the decision level, to show what the
-training actually buys over "just threshold the averaged scores".
+plus an untrained **mean-voting baseline** (⑤ vote), to show what the training
+actually buys over "just threshold the averaged scores".
 
 **Early fusion** here is the real thing: the raw signals of all modalities are
 entangled in one block, so its model must jointly *perceive and fuse* — which is
-why it needs a deeper network. (Contrast the CLIP-style **coordinated
-representation** — separate encoders aligned by contrastive learning — which is a
-different intermediate-level mechanism, implemented in ``clip_screener.py`` and
-discussed in ``docs/fusion.md``, not benchmarked here.)
+why it needs a deeper network. Position ② — CLIP-style **embedding model-level**
+fusion (separate encoders aligned by contrastive learning, a *coordinated*
+representation) — is a different mechanism, implemented in ``clip_screener.py`` and
+verified on real video, so it is not part of this synthetic sweep.
 
 Rule of thumb the comparison usually shows: earlier fusion keeps more information
 but is higher-dimensional and harder to train; later fusion is low-dimensional,

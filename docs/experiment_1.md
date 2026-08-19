@@ -1,10 +1,11 @@
 # Experiment 1 — Fusion depth comparison (V1)
 
 **Question:** where in the pipeline should we fuse the three experts (visual /
-audio / text), and with what model? We compare fusing at three positions — early
-(input, one joint model perceives + fuses), intermediate (encoded features), and
-late (decision) — and measure Precision / Recall / F1 / AUC. (The CLIP-style
-*coordinated* representation is a different mechanism — see `docs/fusion.md`.)
+audio / text), and with what model? Of the five fusion positions (see
+`docs/fusion.md`) this sweep benchmarks four — ① input, ③ feature, ④ decision,
+⑤ vote — and measures Precision / Recall / F1 / AUC. (Position ② is CLIP-style
+*embedding model-level* fusion, a learned-alignment mechanism implemented in
+`clip_screener.py` and verified on real video, not in this synthetic sweep.)
 
 **Status:** run on **synthetic** multimodal features
 (`sentinelai/fusion/synthetic.py`). The numbers validate the framework and the
@@ -19,10 +20,10 @@ python -m sentinelai.fusion.compare
 
 | Fusion | Position | Structure |
 |---|---|---|
-| **early-fusion** | early / input (earliest) | ONE joint block of all modalities' raw signal (256-d) → Linear → ReLU(256) → ReLU(128) → 2 |
-| **embedding-mlp** | intermediate | concat 3 experts' encoded features (96-d) → Linear → ReLU(128) → Linear → 2 |
-| **decision-tree** | late / decision | concat 3 experts' final category scores (9-d) → `DecisionTree(max_depth=5)` |
-| **mean-voting** (baseline) | late / decision | untrained: concat experts' final scores, flag if `max >= 0.5` |
+| **early-fusion** | ① input | ONE joint block of all modalities' raw signal (256-d) → Linear → ReLU(256) → ReLU(128) → 2 |
+| **embedding-mlp** | ③ feature | concat 3 experts' encoded features (96-d) → Linear → ReLU(128) → Linear → 2 |
+| **decision-tree** | ④ decision | concat 3 experts' final category scores (9-d) → `DecisionTree(max_depth=5)` |
+| **mean-voting** (baseline) | ⑤ vote | untrained: concat experts' final scores, flag if `max >= 0.5` |
 
 All strategies are trained/evaluated on the **same** seeded train/test split, so
 differences reflect the fusion position + model, not the data. (The CLIP-style

@@ -89,55 +89,60 @@ experts' raw outputs
 
 ---
 
-## 4. Where to fuse — the three positions (and two representation styles)
+## 4. Where to fuse — the five positions
 
 Fusion is described by **two independent axes**:
 
-- **WHERE (depth)**: early (input) → intermediate → late (decision).
+- **WHERE (depth)**: input → embedding → feature → decision → vote (earliest→latest).
 - **HOW (representation)**: *joint* — squash all modalities into one shared vector;
   vs *coordinated* — keep separate per-modality encoders but **align** them in a
-  shared space by contrastive learning (this is what **CLIP** does).
+  shared space with a learned (contrastive) model — this is what **CLIP** does.
 
-The key distinction people get wrong: fusing **concatenated encoded features** is
-*not* early fusion — each modality already ran its own encoder, so that is
-**intermediate**. True **early fusion** happens *before* any per-modality encoder,
-where one joint model must **perceive and fuse at the same time**.
+The two distinctions people get wrong:
+1. Concatenating **encoded features** is *not* early fusion — each modality already
+   ran its own encoder. True **early fusion** is *before* any encoder, where one
+   joint model must **perceive and fuse at once** (position ①).
+2. **CLIP is its own position** (②): it fuses at the embedding space through a
+   **learned alignment model**, not by concatenation — "embedding *model-level*
+   fusion", distinct from the mechanical feature concat of position ③.
 
 ```
-  ① EARLY / input — all modalities' raw signals entangled together; one joint
-                     model perceives AND fuses (hardest, most information)
+  ① INPUT / data-level — all modalities' raw signals entangled; one joint model
+                          perceives AND fuses
         pixels ┐
         wave   ┼──▶ [ one joint model: perceive + fuse ] ──▶ verdict
         tokens ┘
 
-  ② INTERMEDIATE — each modality has its OWN encoder, then fuse the features
-        pixels ─▶ [enc] ─┐   joint       : concat → MLP  /  cross-attention
-        wave   ─▶ [enc] ─┼─  or ───────────────────────────────────────▶ verdict
-        tokens ─▶ [enc] ─┘   coordinated : contrastive align (CLIP) → similarity
+  ② EMBEDDING model-level (CLIP) — separate encoders, then a LEARNED model aligns
+                          their embeddings into a shared space; fuse by similarity
+        image ─▶ [img enc] ─┐  learned contrastive
+        text  ─▶ [txt enc] ─┴─ alignment (CLIP) ─▶ shared space ─▶ similarity ──▶ verdict
 
-  ③ LATE / decision — each modality makes its own call, then combine them
-        pixels ─▶ [enc→head] ─▶ 0/1 ┐
-        wave   ─▶ [enc→head] ─▶ 0/1 ┼── weighted vote / average ──▶ verdict
-        tokens ─▶ [enc→head] ─▶ 0/1 ┘
+  ③ FEATURE-level — separate encoders, then CONCATENATE the features → one model
+        v/a/t ─▶ [enc] ─▶ concat ─▶ MLP / cross-attention ──▶ verdict
 
-   earliest ─────────────────────────────────────────────▶ latest
-   most info / hardest to train             most robust / interpretable / lossiest
+  ④ DECISION-level — each modality → category scores → a classifier combines them
+        v/a/t ─▶ [enc→head] ─▶ scores ─▶ tree ──▶ verdict
+
+  ⑤ LATE / vote — each modality → 0/1 → weighted vote
+        v/a/t ─▶ [enc→head→0/1] ─▶ weighted vote ──▶ verdict
+
+   earliest ──────────────────────────────────────────────▶ latest
+   most info / hardest to train              most robust / interpretable / lossiest
 ```
 
-| # | Position | When (vs encoders) | Style & method | Our code |
+| # | Position | Mechanism | Style | Our code |
 |---|---|---|---|---|
-| ① | **early / input** | *before* per-modality encoders | joint — one model perceives + fuses raw data | `early-fusion` |
-| ② | **intermediate** | per-modality encoders → fuse features | **joint**: concat→MLP / cross-attention · **coordinated**: contrastive (CLIP) | `embedding-mlp`, `cross_attention.py`; `clip_screener.py` |
-| ③ | **late / decision** | per-modality predictions → combine | voting / averaging | `decision-tree`, `mean-voting` |
+| ① | **input / data-level** | one joint model perceives + fuses raw signals | joint | `early-fusion` |
+| ② | **embedding model-level (CLIP)** | learned alignment of per-modality embeddings into a shared space, fuse by similarity | coordinated | `clip_screener.py` |
+| ③ | **feature-level** | concat encoded features → MLP / cross-attention | joint | `embedding-mlp`, `cross_attention.py` |
+| ④ | **decision-level** | combine per-modality scores with a classifier | — | `decision-tree` |
+| ⑤ | **late / vote** | combine per-modality 0/1 votes | — | `mean-voting` |
 
-Notes:
-- **CLIP is coordinated representation, not early fusion**: separate image/text
-  encoders are trained so matching pairs' embeddings converge; fusion is a cosine
-  similarity in that shared space. Our `clip_screener.py` is exactly this — an
-  *intermediate*, *coordinated* approach, a different mechanism from concat→MLP.
-- **cross-attention** (`cross_attention.py`) is also intermediate, but *joint* and
-  deep: audio/text query the video frames — "when I hear a scream, attend to
-  *these* frames".
+**② vs ③ (the key distinction):** position ② fuses through a *learned alignment
+model* (CLIP's contrastive training builds a shared embedding space, fuse by cosine
+similarity — "model-level"); position ③ just *concatenates* the encoded features
+and lets one MLP sort them out. Same inputs (embeddings), different mechanism.
 
 ---
 
@@ -148,15 +153,16 @@ reports Precision / Recall / F1 / AUC. `synthetic.py` generates features at each
 tier so the framework runs with **no GPU and no real data**. The tiers are built to
 be genuinely different, not just wider/narrower:
 
-- **early** — ONE joint block that mixes *all three modalities' raw signal
-  together* through a nonlinearity, so a model must perceive + fuse (true early).
-- **embedding** — per-modality *encoded* feature blocks concatenated (intermediate).
-- **decision** — per-modality category scores (late).
+- **input** — ONE joint block that mixes *all modalities' raw signal together*
+  through a nonlinearity, so a model must perceive + fuse (true early fusion).
+- **feature** — per-modality *encoded* blocks concatenated → MLP.
+- **decision / vote** — per-modality category scores → tree / threshold-vote.
 
-The CLIP-style *coordinated* approach is a different mechanism (contrastive
-alignment + similarity, not a classifier over concatenated features), so it is
-documented above and implemented in `clip_screener.py`, but not part of this
-numeric sweep.
+Position ② (CLIP, embedding model-level) uses a fundamentally different mechanism
+(learned contrastive alignment + similarity, not a classifier over concatenated
+features), so it is **not** in this synthetic sweep — it is implemented in
+`clip_screener.py` and was verified on **real Kinetics video** (the archery case in
+§6), which is a stronger test than the synthetic sweep.
 
 Run it:
 
@@ -168,15 +174,17 @@ Result (synthetic):
 
 | strategy | position | Precision | Recall | F1 | AUC |
 |---|---|---|---|---|---|
-| **early-fusion** | ① early / input | **1.000** | **1.000** | **1.000** | **1.000** |
-| embedding-mlp | ② intermediate | 0.983 | 0.993 | 0.988 | 0.999 |
-| decision-tree | ③ late / decision | 0.936 | 0.952 | 0.944 | 0.956 |
-| mean-voting | ③ late (untrained) | 0.388 | 1.000 | 0.559 | 0.994 |
+| **early-fusion** | ① input | **1.000** | **1.000** | **1.000** | **1.000** |
+| embedding-mlp | ③ feature | 0.983 | 0.993 | 0.988 | 0.999 |
+| decision-tree | ④ decision | 0.936 | 0.952 | 0.944 | 0.956 |
+| mean-voting | ⑤ vote (untrained) | 0.388 | 1.000 | 0.559 | 0.994 |
+
+_(Position ② CLIP: see `clip_screener.py`; verified on real video, not in this sweep.)_
 
 **Takeaways**
 
-- **Earlier fusion wins** (① > ② > ③) — it keeps information the downstream levels
-  discarded. Early fusion needs a **deeper** model because its input block
+- **Earlier fusion wins** (① > ③ > ④ > ⑤) — it keeps information the downstream
+  levels discarded. Early fusion needs a **deeper** model because its input block
   entangles every modality, so the model must perceive *and* fuse (real early
   fusion's central difficulty).
 - **AUC vs F1 can disagree**: `mean-voting` has a poor F1 (0.559) but high AUC

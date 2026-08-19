@@ -160,15 +160,18 @@ ffmpeg -i video.mp4 -f s16le -ac 1 -ar 16000 -
 
 **按位置（深度）分** —— 越早融合信息越全但越难训，越晚越可解释但可能丢信息：
 
-融合有**两个维度**：**深度**（early/intermediate/late）和**表征方式**（joint 拼成一个共享向量 vs coordinated 各自编码再对齐，如 CLIP）。关键：**拼接"已编码特征"不是 early fusion**——每个模态已各自过编码器，那是 intermediate；真 early fusion 在**编码器之前**，一个联合模型同时"感知+融合"。
+融合有**两个维度**：**深度**（input→embedding→feature→decision→vote）和**表征方式**（joint 拼成一个共享向量 vs coordinated 各自编码再**学习对齐**，如 CLIP）。**五层**：
 
-| 位置 | 相对编码器 | 方式与方法 | 我们的实现 |
+| # | 层 | 怎么融合 | 我们的实现 |
 |---|---|---|---|
-| ① Early / input | 编码器**之前** | joint：一个模型对原始数据同时感知+融合 | ✅ `early-fusion` |
-| ② Intermediate | 各自编码 → 融合特征 | joint：concat→MLP / **cross-attention**；coordinated：对比对齐（**CLIP**） | ✅ `embedding-mlp` / `cross_attention.py` / `clip_screener.py` |
-| ③ Late / decision | 各自出预测 → 合并 | 投票 / 平均 | ✅ `decision-tree` / `mean-voting` |
+| ① | **Input / 数据层** | 编码器**之前**，原始信号混一起，一个模型同时感知+融合 | ✅ `early-fusion` |
+| ② | **Embedding model-level (CLIP)** | 各自编码 → **学习一个模型对齐**到共享空间，比相似度 | ✅ `clip_screener.py` |
+| ③ | **Feature 层** | 各自编码 → **拼接特征** → MLP / cross-attention | ✅ `embedding-mlp` / `cross_attention.py` |
+| ④ | **Decision 层** | 各模态出分数 → 分类器合并 | ✅ `decision-tree` |
+| ⑤ | **Late / Vote** | 各模态出 0/1 → 加权投票 | ✅ `mean-voting` |
 
-> **CLIP = coordinated representation**（独立图/文编码器 + 对比对齐 → 共享空间比相似度），是 intermediate 层的**另一种机制**，不是 early fusion。我们的 `clip_screener.py` 正是它。
+> **第②层 vs 第③层**（关键）：② CLIP 用**学习到的对齐模型**把 embedding 对齐到共享空间（"model-level"），③ 只是**机械拼接**特征再喂 MLP。同样的输入（embedding），机制不同。
+> **拼接已编码特征 ≠ early fusion**——那是 feature 层（③）；真 early fusion（①）在编码器之前。
 
 **按方法分**：
 - **拼接 + MLP**：可学跨模态交互，但要训练
@@ -188,7 +191,7 @@ ffmpeg -i video.mp4 -f s16le -ac 1 -ar 16000 -
        ├─ 抽音(ffmpeg,16k) ─ mel谱 ─ AST ─→ 声音事件      → 音频 0/1
        └─ ASR/OCR/评论/meta ─ 文本模型 ─→ 违规语义         → 文本 0/1
                                    │
-              ①early(编码前联合) / ②intermediate(编码后:concat/CLIP) / ③late(决策) 任选
+        ①input / ②CLIP(embedding model-level) / ③feature-concat / ④decision / ⑤vote 任选
                                    ↓
                           最终审核判定 0/1 (+ 冲突标记)
 ```

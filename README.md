@@ -59,19 +59,22 @@ Modern video content can hide unsafe material in any modality: a violent frame, 
 three experts at different pipeline depths (early → intermediate → late), on a
 shared train/test split. Reproduce with `python -m sentinelai.fusion.compare`.
 
+Fusion has **five positions**: ① input · ② embedding model-level (**CLIP**) ·
+③ feature · ④ decision · ⑤ vote. This sweep benchmarks four; position ② (CLIP,
+learned-alignment) lives in `clip_screener.py`, verified on real video.
+
 | Fusion strategy | Position | Precision | Recall | F1 | AUC |
 |---|---|---|---|---|---|
-| **early-fusion** | early / input | **1.000** | **1.000** | **1.000** | **1.000** |
-| embedding-mlp | intermediate | 0.983 | 0.993 | 0.988 | 0.999 |
-| decision-tree | late / decision | 0.936 | 0.952 | 0.944 | 0.956 |
-| mean-voting (untrained) | late / decision | 0.388 | 1.000 | 0.559 | 0.994 |
+| **early-fusion** | ① input | **1.000** | **1.000** | **1.000** | **1.000** |
+| embedding-mlp | ③ feature | 0.983 | 0.993 | 0.988 | 0.999 |
+| decision-tree | ④ decision | 0.936 | 0.952 | 0.944 | 0.956 |
+| mean-voting (untrained) | ⑤ vote | 0.388 | 1.000 | 0.559 | 0.994 |
 
-Earlier fusion wins (early > intermediate > late). **Early fusion** here is the
-real thing — all modalities' raw signals entangled in one block, so the model must
-perceive *and* fuse; intermediate fuses per-modality encoded features (concat→MLP,
-or CLIP-style coordinated alignment). The untrained voting baseline has a high AUC
-but poor F1 — good ranking, bad fixed threshold. _Numbers are on synthetic features
-validating the framework; real-data numbers await the feature-extraction pipeline._
+Earlier fusion wins (① > ③ > ④ > ⑤). **Early fusion** here is the real thing — all
+modalities' raw signals entangled in one block, so the model must perceive *and*
+fuse. The untrained voting baseline has a high AUC but poor F1 — good ranking, bad
+fixed threshold. _Numbers are on synthetic features validating the framework;
+real-data numbers await the feature-extraction pipeline._
 
 ### Verified on real data
 
