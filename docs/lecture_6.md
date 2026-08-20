@@ -180,7 +180,7 @@ ffmpeg -i video.mp4 -f s16le -ac 1 -ar 16000 -
 - **Cross-Attention 深度融合**：音频/文本作 Q，视频帧作 K/V，"听到尖叫时关注哪几帧"
 - **启发式熔断**：命中违禁词直接判违规、跳过融合（快车道）
 
-**实验结论**（`docs/fusion.md` / `docs/experiment_1.md`，合成数据）：**越早融合越好**（early-fusion F1 1.00 > embedding-mlp 0.988 > decision-tree 0.944）；投票基线 AUC 高但 F1 差（排序好、阈值差）。
+**实验结论**（`docs/fusion.md` §5，合成数据）：**越早融合越好**（early-fusion F1 1.00 > embedding-mlp 0.988 > decision-tree 0.944）；投票基线 AUC 高但 F1 差（排序好、阈值差）。
 
 ---
 

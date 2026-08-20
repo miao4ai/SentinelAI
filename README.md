@@ -55,7 +55,7 @@ Modern video content can hide unsafe material in any modality: a violent frame, 
 
 ### Experiments
 
-**Fusion-depth comparison** (`docs/fusion.md`, `docs/experiment_1.md`) — fusing the
+**Fusion-depth comparison** (`docs/fusion.md`) — fusing the
 three experts at different pipeline depths (early → intermediate → late), on a
 shared train/test split. Reproduce with `python -m sentinelai.fusion.compare`.
 
@@ -94,7 +94,7 @@ sentinelai/
 ├── video.py             # ffmpeg / NVDEC capability detection
 └── hardware.py          # device selection
 tests/                   # per-module tests
-docs/                    # spec.md, ROADMAP.MD, experiment_1.md
+docs/                    # spec.md, ROADMAP.MD, fusion.md, experiments.md
 scripts/                 # GCP GPU-box management (start/stop/status)
 ```
 
