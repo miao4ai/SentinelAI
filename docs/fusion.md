@@ -193,6 +193,16 @@ _(Position ② CLIP: see `clip_screener.py`; verified on real video, not in this
 - **Caveat**: synthetic data by construction favours earlier fusion; real features
   may differ. Numbers validate the framework, not a production claim.
 
+### Trainable modules (①②③)
+
+The sweep above uses sklearn classifiers over pre-mixed features. The *real*
+`nn.Module` for each of ①②③ is also trained end-to-end (PyTorch Lightning) on one
+shared synthetic token dataset — `JointFusionTransformer` (①), `CoordinatedFusion`
+(②, CLIP-style), and `MLPFusion` (③). All reach val_auc 1.00, with terminal loss
+**① 0.0007 < ② 0.0034 < ③ 0.0071** — earlier fusion again fits the token-level
+signal best. Details and how the data is generated: [`experiments.md`](experiments.md)
+§6; run with `python -m sentinelai.train.train_fusion`.
+
 > Taxonomy references: [Multimodal Alignment and Fusion: A Survey](https://arxiv.org/pdf/2411.17040),
 > [Multimodal Classification: Current Landscape, Taxonomy and Future Directions](https://arxiv.org/pdf/2109.09020).
 
