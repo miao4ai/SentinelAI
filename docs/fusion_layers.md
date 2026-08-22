@@ -35,7 +35,20 @@ MLPClassifier(hidden_layer_sizes=(256, 128), max_iter=1200)
 ```
 
 - **输入**：`X_early` (N, 256)  **输出**：0/1 + 概率
-- **真实世界对应**：一个从原始像素+波形+token 端到端训练的联合编码器（我们没训，用合成块代替，因为那需要从头训一个多模态大模型）
+- 这个合成版只是用一个 tanh 块**模拟**"混在一起、不可拆"，真实架构见下。
+
+**真实架构**（`sentinelai/early_fusion.py`，`JointFusionTransformer`）：token 化 + 一个联合 Transformer。
+```
+image → patches ┐
+audio → spec块  ┼─ +模态类型emb → [CLS]+所有token → Transformer → joint embedding → logits
+text  → tokens  ┘     (一条序列)          ↑ 从第1层就跨模态注意力
+```
+- **每个模态只做一件轻活**：一个 `Linear` 投影，把异构 token（像素/波形/词）统一到共享宽度 `d_model`
+- 加**模态类型 embedding**（告诉模型这 token 是图/音/文），拼成一条序列，前面放一个 `[CLS]`
+- 喂**一个共享 Transformer**——每层都跨模态注意力，融合发生在编码内部
+- `[CLS]` 的输出 = **共同的 joint embedding**（一个共享表示，不是三个对齐的——那是 ②CLIP）
+- **输入**：每模态 `(B, T_m, dim_m)` 的 token 序列  **输出**：`logits` (B,C) + `joint_embedding` (B, d_model)
+- **状态**：结构已实现、CPU 形状测试通过；真训练需要真实 token 化的多模态数据（暂未训）
 
 ---
 
