@@ -86,11 +86,11 @@
 
 ---
 
-## 6. 已完成结果（阶段 0.5）：第四章 + Early fusion 训练
+## 6. 已完成结果（阶段 0.5）：三层融合训练（①②③）
 
-> 日期：2026-08-21 ｜ 代码：`sentinelai/train/train_fusion.py` ｜ 复现：`python -m sentinelai.train.train_fusion`
+> 日期：2026-08-21（②于同日补充）｜ 代码：`sentinelai/train/train_fusion.py` ｜ 复现：`python -m sentinelai.train.train_fusion`
 
-在**同一份合成 token 数据**上用 PyTorch Lightning 训练两个真实 `nn.Module`，一份数据**两种视角**喂两个模型，所以这一跑也顺便**公平对比**了 early vs late。
+在**同一份合成 token 数据**上用 PyTorch Lightning 训练**三个**真实 `nn.Module`，一份数据**三种视角**喂三个模型，所以这一跑也顺便**公平对比**了 ①early / ②coordinated / ③late。
 
 ### 6.1 数据是怎么生成的（`make_synthetic_tokens`）
 
@@ -113,9 +113,10 @@ for modality, dim in MODALITY_DIMS.items():
 ```
 关键：**信号是稀疏的、局部的**（只在某几个 token 上），不是均匀铺在整段里。
 
-**两种视角**（同一份 `tokens` + `labels`）：
-- **late fusion 视角**（`pooled_features`）：每个模态 token 先 **mean 池化**成一个向量，再**拼接** → `(N, 96)`。池化会**稀释**那个藏信号的 token。
-- **early fusion 视角**：直接用**原始 token 序列** `{视觉:(N,8,48), 音频:(N,5,24), 文本:(N,6,24)}`，让注意力自己去找信号 token。
+**三种视角**（同一份 `tokens` + `labels`）：
+- **① early fusion**：直接用**原始 token 序列** `{视觉:(N,8,48), 音频:(N,5,24), 文本:(N,6,24)}`，让注意力自己去找信号 token。
+- **② coordinated（`per_modality_embeddings`）**：每个模态 token mean 池化成一个向量，但**各模态分开**（不拼接）→ 各自独立 encoder 对齐到共享空间。
+- **③ late fusion（`pooled_features`）**：每个模态池化后**拼接** → `(N, 96)`。池化会**稀释**那个藏信号的 token。
 
 ### 6.2 训练怎么实现的
 
@@ -123,8 +124,9 @@ for modality, dim in MODALITY_DIMS.items():
 
 | 子类 | 模型 | 一个 batch 怎么算 logits |
 |---|---|---|
-| `LitMLPFusion`（第四章） | `MLPFusion(input_dim=96)` | 池化拼接特征 → MLP → logits |
-| `LitEarlyFusion` | `JointFusionTransformer(d_model=128, 2层)` | token 字典 → 联合 Transformer → `[CLS]` → logits |
+| `LitEarlyFusion`（①） | `JointFusionTransformer(d_model=128, 2层)` | token 序列 → 联合 Transformer → `[CLS]` → logits |
+| `LitCoordinatedFusion`（②） | `CoordinatedFusion(d_model=128)` | 各模态**分开**池化 embedding → 独立 encoder → 对齐共享空间 → 比类别原型相似度 |
+| `LitMLPFusion`（③/第四章） | `MLPFusion(input_dim=96)` | 池化拼接特征 → MLP → logits |
 
 - **同一 seed、同一 80/20 train/val split** → 差异只来自"融合位置 + 模型"，不是数据。
 - `Trainer(accelerator="auto")`：有 GPU 用 GPU，没有就 CPU（本轮 CPU 跑完）。
@@ -132,14 +134,15 @@ for modality, dim in MODALITY_DIMS.items():
 
 ### 6.3 结果
 
-| 模型 | 位置 | 输入 | val_acc | val_auc | 收敛 |
+| 模型 | 位置 | 输入 | val_auc | 终态 val_loss | 收敛 |
 |---|---|---|---|---|---|
-| `MLPFusion`（第四章晚期融合） | ③ feature | 均值池化 + 拼接 | 0.49 → **1.00** | 0.59 → **1.00** | ~5 epoch |
-| `JointFusionTransformer`（early fusion） | ① input | 原始 token 序列 | 0.30 → **1.00** | 0.35 → **1.00** | **~1 epoch**，loss 低约 10× |
+| `JointFusionTransformer`（early） | ① input | 原始 token 序列 | 0.35 → **1.00** | **0.0007** | **~1 epoch** |
+| `CoordinatedFusion`（CLIP-style） | ② embedding model-level | 各模态分开 embedding | 0.59 → **1.00** | 0.0034 | ~1 epoch |
+| `MLPFusion`（第四章） | ③ feature | 均值池化 + 拼接 | 0.59 → **1.00** | 0.0071 | ~5 epoch |
 
 **结论**：
-- 两个训练循环都正确（反向传播、优化器、指标）——真实数据接上只需把 `make_synthetic_tokens` 换成真实 token 化特征。
-- **early fusion 收敛更快、终态 loss 低约 10×**（0.0007 vs 0.007）：它能**注意到藏信号的那几个 token**，而晚期融合先池化、稀释了信号——印证"越早融合信息越全"。
+- 三个训练循环都正确（反向传播、优化器、指标）——真实数据接上只需把 `make_synthetic_tokens` 换成真实 token 化特征。
+- **终态 loss：① early (0.0007) < ② coordinated (0.0034) < ③ late (0.0071)**，越早越低。early 能**注意到藏信号的那几个 token**；late 先池化、稀释了信号；coordinated 居中（各模态对齐到共享空间，比拼接更结构化）。印证"越早融合信息越全"。
 - ⚠️ 合成数据，验证的是**训练框架 + 融合深度趋势**，不是生产指标。
 
 ## 7. 建议起点

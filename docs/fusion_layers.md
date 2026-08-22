@@ -71,8 +71,20 @@ text  → tokens  ┘     (一条序列)          ↑ 从第1层就跨模态注�
 
 - **输入**：视频帧 + prompt 池  **输出**：逐帧 `ClipFrameScore`（violation_prob、各类分、最像的 prompt）
 - **调用**：`ClipScreener().score_frames(frames)`
-- **和③的区别**：② 靠**学习到的对齐**（对比训练），③ 靠**机械拼接**
 - **状态**：✅ 已在真实 Kinetics 视频验证（archery 误判被冲突检测兜住）——比合成 sweep 更硬
+
+**可训练版**（`sentinelai/coordinated_fusion.py`，`CoordinatedFusion`）——上面 `clip_screener` 用的是**预训练** CLIP 零样本；要在自己数据上**训**这个机制，用这个模块：
+```
+各模态 ─▶ [各自独立的 encoder] ─▶ L2归一化 ─┐
+                                           ├─ 余弦相似度 × 温度 ─▶ 平均 ─▶ logits
+学习的“类别原型” ─▶ L2归一化 ────────────────┘   (原型 = CLIP 里 text prompt 的角色)
+```
+- **各模态独立 encoder**（这才叫 coordinated，不是一个联合编码器）→ 投影到共享空间
+- 学习一组**类别原型**（充当 CLIP 里的文本 anchor），各模态 embedding 和原型比**余弦相似度**（带可学习温度），再跨模态平均
+- **输入**：每模态一个 embedding 向量 `{m: (B, dim_m)}`  **输出**：`logits (B, C)`
+- **状态**：✅ 结构实现、训练收敛（见 `experiments.md` §6）
+
+- **和③的区别**：② 各模态**独立编码→对齐到共享空间→比相似度**；③ **机械拼接**特征再喂 MLP
 
 ---
 

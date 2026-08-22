@@ -1,13 +1,15 @@
-"""Train the chapter-4 late-fusion MLP and the early-fusion Transformer.
+"""Train three fusion positions with PyTorch Lightning on one synthetic dataset.
 
-Both are trained with PyTorch Lightning on ONE synthetic token dataset, viewed two
-ways, so the run also *compares* them fairly on the same signal:
+ONE synthetic token dataset is viewed three ways, so the run also *compares* the
+positions fairly on the same signal:
 
-* **late fusion** (`MLPFusion`, ch.4) sees each modality's tokens **mean-pooled**
-  then **concatenated** — a single feature vector (position ③, but pooled to a
-  fixed length like V1's late fusion input).
-* **early fusion** (`JointFusionTransformer`, position ①) sees the **raw token
-  sequences** and fuses them with cross-modal attention from layer 1.
+* **① early fusion** (`JointFusionTransformer`) sees the **raw token sequences** and
+  fuses them with cross-modal attention from layer 1.
+* **② coordinated / CLIP-style** (`CoordinatedFusion`) sees one **separate** pooled
+  embedding per modality, projects each into a shared space, and scores against
+  learned class prototypes by cosine similarity.
+* **③ late fusion** (`MLPFusion`, ch.4) sees each modality's tokens **mean-pooled**
+  then **concatenated** into a single feature vector → MLP.
 
 The label signal is planted in a few specific tokens, so early fusion (which can
 attend to those tokens) has a fair shot at beating pooled late fusion. Swap the
@@ -24,6 +26,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+from ..coordinated_fusion import CoordinatedFusion
 from ..early_fusion import JointFusionTransformer
 from ..fusion.mlp_fusion import MLPFusion
 
@@ -62,6 +65,11 @@ def make_synthetic_tokens(
 def pooled_features(tokens: dict[str, torch.Tensor]) -> torch.Tensor:
     """Late-fusion view: mean-pool each modality's tokens, then concatenate."""
     return torch.cat([t.mean(dim=1) for t in tokens.values()], dim=1)   # (N, Σdim)
+
+
+def per_modality_embeddings(tokens: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Coordinated view: mean-pool each modality but keep them SEPARATE (not concat)."""
+    return {m: t.mean(dim=1) for m, t in tokens.items()}                # {m: (N, dim_m)}
 
 
 class _TokenDataset(Dataset):
@@ -165,6 +173,18 @@ class LitEarlyFusion(_LitFusionBase):
         return logits, y
 
 
+class LitCoordinatedFusion(_LitFusionBase):
+    """Embedding model-level (CLIP-style): per-modality encoders → shared space."""
+
+    def __init__(self, modality_dims: dict[str, int], n_categories: int = N_CATEGORIES, lr: float = 1e-3) -> None:
+        super().__init__(lr)
+        self.model = CoordinatedFusion(modality_dims, d_model=128, n_categories=n_categories)
+
+    def _logits_labels(self, batch):
+        embeddings, y = batch      # {m: (B, dim_m)} kept separate
+        return self.model(embeddings), y
+
+
 # -- training entry points --------------------------------------------------
 
 def _trainer(max_epochs: int) -> pl.Trainer:
@@ -188,6 +208,16 @@ def train_both(n_samples: int = 2400, max_epochs: int = 15, seed: int = 0) -> No
     print("=== Chapter 4 — late fusion (MLPFusion) ===")
     _trainer(max_epochs).fit(
         LitMLPFusion(input_dim=feats.shape[1]), late_tr, late_va
+    )
+
+    # ---- position ②: coordinated / CLIP-style (per-modality embeddings) ----
+    emb = per_modality_embeddings(tokens)
+    esub = lambda idx: {m: v[idx] for m, v in emb.items()}
+    coord_tr = DataLoader(_TokenDataset(esub(tr), labels[tr]), batch_size=64, shuffle=True)
+    coord_va = DataLoader(_TokenDataset(esub(va), labels[va]), batch_size=64)
+    print("=== Embedding model-level / coordinated (CoordinatedFusion, CLIP-style) ===")
+    _trainer(max_epochs).fit(
+        LitCoordinatedFusion(MODALITY_DIMS), coord_tr, coord_va
     )
 
     # ---- early fusion (token sequences -> joint Transformer) ----
