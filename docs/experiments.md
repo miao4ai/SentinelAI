@@ -88,20 +88,58 @@
 
 ## 6. 已完成结果（阶段 0.5）：第四章 + Early fusion 训练
 
-在**同一份合成 token 数据**上用 PyTorch Lightning 训练两个真实 `nn.Module`（BCE 多标签 + AdamW，验证集指标）。代码 `sentinelai/train/train_fusion.py`，复现：
+> 日期：2026-08-21 ｜ 代码：`sentinelai/train/train_fusion.py` ｜ 复现：`python -m sentinelai.train.train_fusion`
 
-```bash
-python -m sentinelai.train.train_fusion
+在**同一份合成 token 数据**上用 PyTorch Lightning 训练两个真实 `nn.Module`，一份数据**两种视角**喂两个模型，所以这一跑也顺便**公平对比**了 early vs late。
+
+### 6.1 数据是怎么生成的（`make_synthetic_tokens`）
+
+设计目标：让**标签信号只藏在少数几个 token 里**，这样"能定位到那几个 token"的模型（early fusion 的注意力）才占优——否则对比没意义。
+
+每个样本：
+```python
+# 1. 多标签：每个规范类别独立以 p=0.3 的概率激活
+labels = (rng.random((N, 3)) < 0.3)                      # (N, 3) multi-hot
+
+# 2. 每个模态生成 token 序列（视觉8×48 / 音频5×24 / 文本6×24 维）
+for modality, dim in MODALITY_DIMS.items():
+    x = rng.normal(size=(N, T_m, dim))                  # 纯噪声底
+    signatures = rng.normal(size=(3, dim))              # 每个类别一个“签名向量”
+    # 3. 某类别激活时，把它的签名种进【随机一个】token
+    for i, c: 
+        if labels[i, c]:
+            t = random token index
+            x[i, t] += signatures[c] * 2.0              # 信号只在这一个 token 上
 ```
+关键：**信号是稀疏的、局部的**（只在某几个 token 上），不是均匀铺在整段里。
+
+**两种视角**（同一份 `tokens` + `labels`）：
+- **late fusion 视角**（`pooled_features`）：每个模态 token 先 **mean 池化**成一个向量，再**拼接** → `(N, 96)`。池化会**稀释**那个藏信号的 token。
+- **early fusion 视角**：直接用**原始 token 序列** `{视觉:(N,8,48), 音频:(N,5,24), 文本:(N,6,24)}`，让注意力自己去找信号 token。
+
+### 6.2 训练怎么实现的
+
+共享一个 Lightning 基类 `_LitFusionBase`（BCE-with-logits 多标签 + AdamW；验证集算 loss / acc / 逐类平均 AUC）：
+
+| 子类 | 模型 | 一个 batch 怎么算 logits |
+|---|---|---|
+| `LitMLPFusion`（第四章） | `MLPFusion(input_dim=96)` | 池化拼接特征 → MLP → logits |
+| `LitEarlyFusion` | `JointFusionTransformer(d_model=128, 2层)` | token 字典 → 联合 Transformer → `[CLS]` → logits |
+
+- **同一 seed、同一 80/20 train/val split** → 差异只来自"融合位置 + 模型"，不是数据。
+- `Trainer(accelerator="auto")`：有 GPU 用 GPU，没有就 CPU（本轮 CPU 跑完）。
+- Dict-token 的 batch 靠 `_TokenDataset` + PyTorch 默认 collate（自动把每个模态的张量 stack）。
+
+### 6.3 结果
 
 | 模型 | 位置 | 输入 | val_acc | val_auc | 收敛 |
 |---|---|---|---|---|---|
-| `MLPFusion`（第四章晚期融合） | ③ feature | 各模态 token **均值池化 + 拼接** | 0.49 → **1.00** | 0.59 → **1.00** | ~5 epoch |
-| `JointFusionTransformer`（early fusion） | ① input | 各模态**原始 token 序列** | 0.30 → **1.00** | 0.35 → **1.00** | **~1 epoch**，loss 低一个量级 |
+| `MLPFusion`（第四章晚期融合） | ③ feature | 均值池化 + 拼接 | 0.49 → **1.00** | 0.59 → **1.00** | ~5 epoch |
+| `JointFusionTransformer`（early fusion） | ① input | 原始 token 序列 | 0.30 → **1.00** | 0.35 → **1.00** | **~1 epoch**，loss 低约 10× |
 
 **结论**：
-- 两个训练循环都正确（反向传播、优化器、指标）——真实数据接上只需换 `make_synthetic_tokens`。
-- **early fusion 收敛更快、终态 loss 低约 10×**（0.0007 vs 0.007）：它能**注意到藏信号的具体 token**，而晚期融合先池化 token、稀释了信号——印证"越早融合信息越全"。
+- 两个训练循环都正确（反向传播、优化器、指标）——真实数据接上只需把 `make_synthetic_tokens` 换成真实 token 化特征。
+- **early fusion 收敛更快、终态 loss 低约 10×**（0.0007 vs 0.007）：它能**注意到藏信号的那几个 token**，而晚期融合先池化、稀释了信号——印证"越早融合信息越全"。
 - ⚠️ 合成数据，验证的是**训练框架 + 融合深度趋势**，不是生产指标。
 
 ## 7. 建议起点
