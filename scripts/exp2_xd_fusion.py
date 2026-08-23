@@ -54,7 +54,9 @@ def load_audio(split: str) -> dict[str, np.ndarray]:
     for p in glob.glob(f"{AUDIO}/{split}/**/*.parquet", recursive=True):
         tbl = pq.read_table(p, columns=["video_id", "feature_vector"]).to_pandas()
         for vid, fv in zip(tbl["video_id"], tbl["feature_vector"]):
-            acc[base(vid)].append(np.asarray(fv, dtype=np.float32).ravel())
+            # each cell is a length-1 object array wrapping one 768-d AST vector.
+            vec = np.mean([np.asarray(x, dtype=np.float32) for x in fv], axis=0)
+            acc[base(vid)].append(vec)
     return {k: np.mean(v, axis=0) for k, v in acc.items()}
 
 
