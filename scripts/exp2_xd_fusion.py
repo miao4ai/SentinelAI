@@ -93,11 +93,19 @@ def score(y_true, proba) -> dict:
 
 def main() -> None:
     print("loading features...")
-    audio = load_audio()                          # all clips with audio
-    Xv_tr, Xa_tr, y_tr = pair(load_i3d(TRAIN_DIRS), audio)     # official train split
-    Xv_te, Xa_te, y_te = pair(load_i3d(["test_videos"]), audio)  # official test split
-    print(f"paired train: {len(y_tr)} clips ({y_tr.mean():.0%} violent) | "
-          f"test: {len(y_te)} clips ({y_te.mean():.0%} violent)")
+    audio = load_audio()
+    # Pair every clip that has both modalities. The audio source's split does not
+    # cover the official test folder, so we make our own stratified 80/20 split on
+    # the paired clips rather than the official one.
+    Xv, Xa, y = pair(load_i3d(TRAIN_DIRS + ["test_videos"]), audio)
+    from sklearn.model_selection import train_test_split
+
+    idx = np.arange(len(y))
+    tr, te = train_test_split(idx, test_size=0.2, random_state=0, stratify=y)
+    Xv_tr, Xa_tr, y_tr = Xv[tr], Xa[tr], y[tr]
+    Xv_te, Xa_te, y_te = Xv[te], Xa[te], y[te]
+    print(f"paired total: {len(y)} clips ({y.mean():.0%} violent) | "
+          f"train {len(tr)} / test {len(te)}")
     print(f"dims: visual={Xv_tr.shape[1]}  audio={Xa_tr.shape[1]}\n")
 
     # per-modality probabilities (also reused for late fusion)
