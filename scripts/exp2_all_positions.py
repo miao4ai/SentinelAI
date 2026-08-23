@@ -27,7 +27,7 @@ import pyarrow.parquet as pq
 import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 
@@ -115,9 +115,16 @@ def main() -> None:
     vis, aud = load_i3d_seq(), load_audio_seq()
     keys = [k for k in vis if k in aud]
     y = np.array([is_violent(k) for k in keys])
-    tr, te = train_test_split(np.arange(len(keys)), test_size=0.2, random_state=0, stratify=y)
+    # Group by source movie (key before "__#") so no movie's clips straddle the
+    # split — avoids the movie-level leak that inflates a random per-clip split.
+    groups = np.array([k.split("__")[0] for k in keys])
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=0)
+    tr, te = next(gss.split(np.arange(len(keys)), y, groups))
     ytr, yte = y[tr], y[te]
-    print(f"paired {len(keys)} clips ({y.mean():.0%} violent) | train {len(tr)} / test {len(te)}\n")
+    overlap = set(groups[tr]) & set(groups[te])
+    print(f"paired {len(keys)} clips, {len(set(groups))} movies ({y.mean():.0%} violent) | "
+          f"train {len(tr)} / test {len(te)} (test {yte.mean():.0%} violent) | "
+          f"movie overlap: {len(overlap)}\n")
 
     # pooled (video-level) vectors for ②③⑤ and baselines
     Vp = np.stack([vis[keys[i]].mean(0) for i in range(len(keys))])   # (N, 2048)
