@@ -48,10 +48,15 @@ def load_i3d(dirs: list[str]) -> dict[str, np.ndarray]:
     return feats
 
 
-def load_audio(split: str) -> dict[str, np.ndarray]:
-    """Video-level audio feature: pool AST snippet features (mean) per video_id."""
+def load_audio() -> dict[str, np.ndarray]:
+    """Video-level audio feature per clip: pool AST snippet features (mean) per video_id.
+
+    Reads ALL downloaded parquets (both dirs). The audio source uses a different
+    train/test split than the I3D source, so we pool everything into one dict and
+    let the I3D folder (the official XD-Violence split) decide train vs test.
+    """
     acc: dict[str, list[np.ndarray]] = defaultdict(list)
-    for p in glob.glob(f"{AUDIO}/{split}/**/*.parquet", recursive=True):
+    for p in glob.glob(f"{AUDIO}/**/*.parquet", recursive=True):
         tbl = pq.read_table(p, columns=["video_id", "feature_vector"]).to_pandas()
         for vid, fv in zip(tbl["video_id"], tbl["feature_vector"]):
             # each cell is a length-1 object array wrapping one 768-d AST vector.
@@ -88,10 +93,9 @@ def score(y_true, proba) -> dict:
 
 def main() -> None:
     print("loading features...")
-    vtr, atr = load_i3d(TRAIN_DIRS), load_audio("train")
-    vte, ate = load_i3d(["test_videos"]), load_audio("test")
-    Xv_tr, Xa_tr, y_tr = pair(vtr, atr)
-    Xv_te, Xa_te, y_te = pair(vte, ate)
+    audio = load_audio()                          # all clips with audio
+    Xv_tr, Xa_tr, y_tr = pair(load_i3d(TRAIN_DIRS), audio)     # official train split
+    Xv_te, Xa_te, y_te = pair(load_i3d(["test_videos"]), audio)  # official test split
     print(f"paired train: {len(y_tr)} clips ({y_tr.mean():.0%} violent) | "
           f"test: {len(y_te)} clips ({y_te.mean():.0%} violent)")
     print(f"dims: visual={Xv_tr.shape[1]}  audio={Xa_tr.shape[1]}\n")
