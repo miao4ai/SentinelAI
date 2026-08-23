@@ -6,7 +6,7 @@
 # - Anti-runaway-cost: 4h hard auto-stop + idle auto-shutdown (120min)
 set -e
 PROJECT=just-aloe-499321-q2
-ZONE=us-central1-a
+ZONE=us-central1-b
 NAME=sentinel-gpu
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
