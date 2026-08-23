@@ -47,7 +47,7 @@
 | **0** | 合成框架验证（①③④⑤对比） | 合成 | 否 | ✅ 完成（见 `fusion.md` §5） |
 | **0.5** | **训练真实 nn.Module**（第四章 MLP + early fusion） | 合成 | 否 | ✅ 完成（见下 §6） |
 | **1** | 单模态真实基线 | UCF/XD I3D | 否 | 🟢 现在可做 |
-| **2** | **真实 2 模态融合对比** | XD I3D + VGGish | 否 | 🟢 补个下载即可 |
+| **2** | **真实 2 模态融合对比** | XD I3D + AST 音频 | 是* | ✅ 完成（见下 §7） |
 | **3** | 抽特征管线（跑三专家→缓存） | XD 原始视频子集 | 是 | 🟡 需下原视频 |
 | **4** | ② CLIP 真实指标 + ③ cross-attn 训练 | Kinetics/XD 帧 | 是 | 🟡 |
 
@@ -145,7 +145,33 @@ for modality, dim in MODALITY_DIMS.items():
 - **终态 loss：① early (0.0007) < ② coordinated (0.0034) < ③ late (0.0071)**，越早越低。early 能**注意到藏信号的那几个 token**；late 先池化、稀释了信号；coordinated 居中（各模态对齐到共享空间，比拼接更结构化）。印证"越早融合信息越全"。
 - ⚠️ 合成数据，验证的是**训练框架 + 融合深度趋势**，不是生产指标。
 
-## 7. 建议起点
+## 7. 真实结果（阶段 2）：XD-Violence 全融合位置对比 ⭐
+
+> 日期：2026-08-22 ｜ 数据：XD-Violence **I3D 视觉 + AST 音频**（预提取特征，来自 HF）｜ 脚本：`scripts/exp2_all_positions.py`
+
+**第一个真实多模态结果。** 把预提取的 I3D 视觉特征和 AST 音频特征**按 `video_id` 配对**（788 个片段两模态都有），各池化到视频级；`label_A`=正常、其余=暴力（48% 暴力，基本平衡）。两源的 train/test 划分不一致，故在配对片段上做**自己的分层 80/20 划分**（train 630 / test 158，seed=0）。
+
+各位置的模型：① `JointFusionTransformer`（视觉 I3D 时序 token + 音频 AST snippet token，跨模态注意力）｜② `CoordinatedFusion`（池化 embedding 各自编码→对齐共享空间）｜③ 池化拼接→LogisticRegression｜⑤ 各模态 LR 概率平均。
+
+| 模型 | Precision | Recall | F1 | AUC |
+|---|---|---|---|---|
+| 视觉单模态 (I3D) | 0.917 | 0.868 | 0.892 | 0.960 |
+| 音频单模态 (AST) | 0.929 | 0.855 | 0.890 | 0.969 |
+| ① early（joint transformer） | 0.896 | 0.908 | 0.902 | **0.977** |
+| ② coordinated（CLIP-style） | 0.932 | 0.895 | 0.913 | **0.977** |
+| ③ feature-concat | 0.932 | 0.895 | 0.913 | 0.965 |
+| **⑤ late-fusion (avg)** | **0.945** | 0.908 | **0.926** | **0.978** |
+
+**关键发现（真实数据）：**
+1. **多模态值得**：所有融合 F1 (0.90–0.926) 都 > 单模态 (0.89)。
+2. **⑤ 晚期融合(avg) F1 最高 (0.926)**——真实数据上简单概率平均最稳、最能打。
+3. **①early / ②coordinated AUC 最高 (0.977)**，排序质量顶尖，但 0.5 阈值下 F1 略低于 ⑤。
+4. **② coordinated > ③ concat**：F1 相同 (0.913) 但 AUC 更高 (0.977 vs 0.965)——**对齐共享空间比机械拼接排序更好**（印证 CLIP 式 coordinated 与 concat 的机制差异）。
+5. **与合成数据的反差**：合成里"越早严格越好"（① > ② > ③），**真实数据不成立**——各位置很接近，晚期融合 F1 领先、early/coordinated AUC 领先。真实场景里融合位置的差距远小于合成 toy，**简单晚期融合往往极具竞争力**。
+
+> *不严格需要 GPU：sklearn 部分 CPU 即可；①② 的 torch 模型在 GPU 上跑（也可 CPU）。
+
+## 8. 建议起点
 
 **先做实验 1 + 2**（用现有数据 + 一个小下载，不用 GPU）：
 1. XD I3D → 视觉单模态真实基线
@@ -153,7 +179,7 @@ for modality, dim in MODALITY_DIMS.items():
 
 这把合成对比（`fusion.md` §5）升级为"真实"，且成本最低。跑完再决定是否上原始视频做 3 模态（实验 3）。
 
-## 8. 可复现
+## 9. 可复现
 
 - 每个实验固定 seed、记录 split、把结果表写进 `docs/experiment_N.md`。
 - 特征缓存存到 `data/cache/`（已 gitignore），脚本存 `scripts/`。
