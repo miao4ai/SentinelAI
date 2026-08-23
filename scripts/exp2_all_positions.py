@@ -27,7 +27,7 @@ import pyarrow.parquet as pq
 import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
-from sklearn.model_selection import GroupShuffleSplit
+from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 
@@ -115,50 +115,45 @@ def main() -> None:
     vis, aud = load_i3d_seq(), load_audio_seq()
     keys = [k for k in vis if k in aud]
     y = np.array([is_violent(k) for k in keys])
-    # Group by source movie (key before "__#") so no movie's clips straddle the
-    # split — avoids the movie-level leak that inflates a random per-clip split.
+    # Group by source movie (key before "__#") so no movie's clips straddle a
+    # fold — avoids the movie-level leak that inflates a random per-clip split.
     groups = np.array([k.split("__")[0] for k in keys])
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=0)
-    tr, te = next(gss.split(np.arange(len(keys)), y, groups))
-    ytr, yte = y[tr], y[te]
-    overlap = set(groups[tr]) & set(groups[te])
-    print(f"paired {len(keys)} clips, {len(set(groups))} movies ({y.mean():.0%} violent) | "
-          f"train {len(tr)} / test {len(te)} (test {yte.mean():.0%} violent) | "
-          f"movie overlap: {len(overlap)}\n")
+    print(f"paired {len(keys)} clips, {len(set(groups))} movies ({y.mean():.0%} violent); "
+          f"5-fold GroupKFold (movie-disjoint)\n")
 
-    # pooled (video-level) vectors for ②③⑤ and baselines
-    Vp = np.stack([vis[keys[i]].mean(0) for i in range(len(keys))])   # (N, 2048)
-    Ap = np.stack([aud[keys[i]].mean(0) for i in range(len(keys))])   # (N, 768)
-    # padded token sequences for ①
-    Vs = np.stack([resample(vis[keys[i]], V_TOK) for i in range(len(keys))])  # (N, 32, 2048)
-    As = np.stack([resample(aud[keys[i]], A_TOK) for i in range(len(keys))])  # (N, 16, 768)
+    # features computed once; folds index into them
+    Vp = np.stack([vis[k].mean(0) for k in keys])                  # (N, 2048)
+    Ap = np.stack([aud[k].mean(0) for k in keys])                  # (N, 768)
+    Vs = np.stack([resample(vis[k], V_TOK) for k in keys])         # (N, 32, 2048)
+    As = np.stack([resample(aud[k], A_TOK) for k in keys])         # (N, 16, 768)
+    VpAp = np.concatenate([Vp, Ap], 1)
 
-    pv = sk_probas(Vp[tr], ytr, Vp[te])
-    pa = sk_probas(Ap[tr], ytr, Ap[te])
-    p3 = sk_probas(np.concatenate([Vp, Ap], 1)[tr], ytr, np.concatenate([Vp, Ap], 1)[te])
-    p5 = (pv + pa) / 2
+    per_model: dict[str, list[dict]] = defaultdict(list)
+    for tr, te in GroupKFold(n_splits=5).split(np.arange(len(keys)), y, groups):
+        ytr, yte = y[tr], y[te]
+        pv = sk_probas(Vp[tr], ytr, Vp[te])
+        pa = sk_probas(Ap[tr], ytr, Ap[te])
+        p3 = sk_probas(VpAp[tr], ytr, VpAp[te])
+        p5 = (pv + pa) / 2
+        torch.manual_seed(0)
+        p1 = torch_probas(
+            JointFusionTransformer({"visual": 2048, "audio": 768}, d_model=128, n_layers=2, n_categories=1),
+            {"visual": Vs[tr], "audio": As[tr]}, ytr, {"visual": Vs[te], "audio": As[te]})
+        torch.manual_seed(0)
+        p2 = torch_probas(
+            CoordinatedFusion({"visual": 2048, "audio": 768}, d_model=128, n_categories=1),
+            {"visual": Vp[tr], "audio": Ap[tr]}, ytr, {"visual": Vp[te], "audio": Ap[te]})
+        for name, pr in [("visual only (I3D)", pv), ("audio only (AST)", pa),
+                         ("① early (joint transf.)", p1), ("② coordinated (CLIP)", p2),
+                         ("③ feature-concat", p3), ("⑤ late-fusion (avg)", p5)]:
+            per_model[name].append(score(yte, pr))
 
-    torch.manual_seed(0)
-    p1 = torch_probas(
-        JointFusionTransformer({"visual": 2048, "audio": 768}, d_model=128, n_layers=2, n_categories=1),
-        {"visual": Vs[tr], "audio": As[tr]}, ytr, {"visual": Vs[te], "audio": As[te]},
-    )
-    torch.manual_seed(0)
-    p2 = torch_probas(
-        CoordinatedFusion({"visual": 2048, "audio": 768}, d_model=128, n_categories=1),
-        {"visual": Vp[tr], "audio": Ap[tr]}, ytr, {"visual": Vp[te], "audio": Ap[te]},
-    )
-
-    rows = [
-        ("visual only (I3D)", pv), ("audio only (AST)", pa),
-        ("① early (joint transf.)", p1), ("② coordinated (CLIP)", p2),
-        ("③ feature-concat", p3), ("⑤ late-fusion (avg)", p5),
-    ]
-    print(f"{'model':<26}{'P':>7}{'R':>7}{'F1':>7}{'AUC':>7}")
-    print("-" * 54)
-    for name, pr in rows:
-        m = score(yte, pr)
-        print(f"{name:<26}{m['P']:>7.3f}{m['R']:>7.3f}{m['F1']:>7.3f}{m['AUC']:>7.3f}")
+    # mean ± std across the 5 folds
+    print(f"{'model':<26}{'F1 (mean±std)':>16}{'AUC (mean±std)':>16}")
+    print("-" * 58)
+    for name, folds in per_model.items():
+        f1 = np.array([m["F1"] for m in folds]); auc = np.array([m["AUC"] for m in folds])
+        print(f"{name:<26}{f'{f1.mean():.3f}±{f1.std():.3f}':>16}{f'{auc.mean():.3f}±{auc.std():.3f}':>16}")
 
 
 if __name__ == "__main__":
