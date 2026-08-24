@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 
@@ -118,11 +118,11 @@ def main():
         print("no clips with all 3 modalities — run extract_text_features.py first.")
         return
     y = np.array([is_violent(k) for k in keys])
-    tr, te = train_test_split(np.arange(len(keys)), test_size=0.2, random_state=0, stratify=y)
-    ytr, yte = y[tr], y[te]
-    speech = np.mean([np.any(txt[k]) for k in keys])
-    print(f"3-modal clips {len(keys)} ({y.mean():.0%} violent, {speech:.0%} have speech) | "
-          f"train {len(tr)} / test {len(te)}\n")
+    groups = np.array([k.split("__")[0] for k in keys])   # source movie
+    speech = np.mean([bool(np.any(txt[k])) for k in keys])
+    print(f"3-modal clips {len(keys)}, {len(set(groups))} movies "
+          f"({y.mean():.0%} violent, {speech:.0%} have speech); "
+          f"5-fold GroupKFold (movie-disjoint)\n")
 
     Vp = np.stack([vis[k].mean(0) for k in keys])
     Ap = np.stack([aud[k].mean(0) for k in keys])
@@ -130,31 +130,34 @@ def main():
     Vs = np.stack([resample(vis[k], V_TOK) for k in keys])
     As = np.stack([resample(aud[k], A_TOK) for k in keys])
     Ts = Tp[:, None, :]                       # text = one token
-
-    pv = sk_probas(Vp[tr], ytr, Vp[te])
-    pa = sk_probas(Ap[tr], ytr, Ap[te])
-    pt = sk_probas(Tp[tr], ytr, Tp[te])
     allp = np.concatenate([Vp, Ap, Tp], 1)
-    p3 = sk_probas(allp[tr], ytr, allp[te])
-    p5 = (pv + pa + pt) / 3
 
-    torch.manual_seed(0)
-    p1 = torch_probas(JointFusionTransformer(DIMS, d_model=128, n_layers=2, n_categories=1),
-                      {"visual": Vs[tr], "audio": As[tr], "text": Ts[tr]}, ytr,
-                      {"visual": Vs[te], "audio": As[te], "text": Ts[te]})
-    torch.manual_seed(0)
-    p2 = torch_probas(CoordinatedFusion(DIMS, d_model=128, n_categories=1),
-                      {"visual": Vp[tr], "audio": Ap[tr], "text": Tp[tr]}, ytr,
-                      {"visual": Vp[te], "audio": Ap[te], "text": Tp[te]})
+    per_model: dict[str, list[dict]] = defaultdict(list)
+    for tr, te in GroupKFold(n_splits=5).split(np.arange(len(keys)), y, groups):
+        ytr, yte = y[tr], y[te]
+        pv = sk_probas(Vp[tr], ytr, Vp[te])
+        pa = sk_probas(Ap[tr], ytr, Ap[te])
+        pt = sk_probas(Tp[tr], ytr, Tp[te])
+        p3 = sk_probas(allp[tr], ytr, allp[te])
+        p5 = (pv + pa + pt) / 3
+        torch.manual_seed(0)
+        p1 = torch_probas(JointFusionTransformer(DIMS, d_model=128, n_layers=2, n_categories=1),
+                          {"visual": Vs[tr], "audio": As[tr], "text": Ts[tr]}, ytr,
+                          {"visual": Vs[te], "audio": As[te], "text": Ts[te]})
+        torch.manual_seed(0)
+        p2 = torch_probas(CoordinatedFusion(DIMS, d_model=128, n_categories=1),
+                          {"visual": Vp[tr], "audio": Ap[tr], "text": Tp[tr]}, ytr,
+                          {"visual": Vp[te], "audio": Ap[te], "text": Tp[te]})
+        for name, pr in [("visual only", pv), ("audio only", pa), ("text only", pt),
+                         ("① early (joint transf.)", p1), ("② coordinated (CLIP)", p2),
+                         ("③ feature-concat", p3), ("⑤ late-fusion (avg)", p5)]:
+            per_model[name].append(score(yte, pr))
 
-    rows = [("visual only", pv), ("audio only", pa), ("text only", pt),
-            ("① early (joint transf.)", p1), ("② coordinated (CLIP)", p2),
-            ("③ feature-concat", p3), ("⑤ late-fusion (avg)", p5)]
-    print(f"{'model':<26}{'P':>7}{'R':>7}{'F1':>7}{'AUC':>7}")
-    print("-" * 54)
-    for name, pr in rows:
-        m = score(yte, pr)
-        print(f"{name:<26}{m['P']:>7.3f}{m['R']:>7.3f}{m['F1']:>7.3f}{m['AUC']:>7.3f}")
+    print(f"{'model':<26}{'F1 (mean±std)':>16}{'AUC (mean±std)':>16}")
+    print("-" * 58)
+    for name, folds in per_model.items():
+        f1 = np.array([m["F1"] for m in folds]); auc = np.array([m["AUC"] for m in folds])
+        print(f"{name:<26}{f'{f1.mean():.3f}±{f1.std():.3f}':>16}{f'{auc.mean():.3f}±{auc.std():.3f}':>16}")
 
 
 if __name__ == "__main__":
