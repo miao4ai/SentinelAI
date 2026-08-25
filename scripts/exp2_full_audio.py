@@ -1,5 +1,8 @@
 """Experiment 2 (full-audio) — fusion positions on the EXPANDED paired set.
 
+Also adds ④ decision-level fusion (a GBDT meta-learner stacked on the per-modality
+probabilities, trained out-of-fold) — the learned counterpart to ⑤'s fixed average.
+
 Same comparison as exp2_all_positions.py, but audio now comes from
 `data/xd-violence/audio_full/` — AST features we extracted ourselves for *every*
 I3D clip (see scripts/extract_audio_features.py), lifting the paired visual+audio
@@ -22,9 +25,11 @@ from collections import defaultdict
 
 import numpy as np
 import torch
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, cross_val_predict
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 
@@ -86,6 +91,14 @@ def sk_probas(Xtr, ytr, Xte):
     return clf.predict_proba(sc.transform(Xte))[:, 1]
 
 
+def oof_probs(X, y, g):
+    """Out-of-fold LR probabilities on the training set (inner movie-grouped 3-fold),
+    so the ④ meta-learner never sees a modality's prediction on data it trained on."""
+    pipe = make_pipeline(StandardScaler(), LogisticRegression(max_iter=3000))
+    cv = list(GroupKFold(n_splits=3).split(X, y, g))
+    return cross_val_predict(pipe, X, y, cv=cv, method="predict_proba")[:, 1]
+
+
 def torch_probas(model, tr_inputs, ytr, te_inputs, epochs=200, lr=1e-3):
     """Full-batch train a torch fusion model (binary BCE), return test probabilities."""
     model = model.to(DEVICE)
@@ -131,6 +144,13 @@ def main() -> None:
         pa = sk_probas(Ap[tr], ytr, Ap[te])
         p3 = sk_probas(VpAp[tr], ytr, VpAp[te])
         p5 = (pv + pa) / 2
+        # ④ decision-level: a GBDT meta-learner over the two modality probabilities,
+        # trained on out-of-fold train probs (avoids the meta-learner seeing leaked
+        # in-sample predictions), then applied to the test-fold probs [pv, pa].
+        gtr = groups[tr]
+        meta_tr = np.c_[oof_probs(Vp[tr], ytr, gtr), oof_probs(Ap[tr], ytr, gtr)]
+        meta = GradientBoostingClassifier(random_state=0).fit(meta_tr, ytr)
+        p4 = meta.predict_proba(np.c_[pv, pa])[:, 1]
         torch.manual_seed(0)
         p1 = torch_probas(
             JointFusionTransformer({"visual": 2048, "audio": 768}, d_model=128, n_layers=2, n_categories=1),
@@ -141,7 +161,8 @@ def main() -> None:
             {"visual": Vp[tr], "audio": Ap[tr]}, ytr, {"visual": Vp[te], "audio": Ap[te]})
         for name, pr in [("visual only (I3D)", pv), ("audio only (AST)", pa),
                          ("① early (joint transf.)", p1), ("② coordinated (CLIP)", p2),
-                         ("③ feature-concat", p3), ("⑤ late-fusion (avg)", p5)]:
+                         ("③ feature-concat", p3), ("④ decision (GBDT stack)", p4),
+                         ("⑤ late-fusion (avg)", p5)]:
             per_model[name].append(score(yte, pr))
 
     # mean ± std across the 5 folds
