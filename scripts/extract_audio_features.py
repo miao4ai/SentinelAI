@@ -23,6 +23,7 @@ import numpy as np
 DATA = os.path.expanduser("~/documents/SentinelAI/data/xd-violence")
 I3D = f"{DATA}/data/i3d_rgb"
 OUT = f"{DATA}/audio_full"
+OUT_SEQ = f"{DATA}/audio_seq"
 HF_REPO = "jherng/xd-violence"
 DIRS = ["1-1004", "1005-2004", "2005-2804", "2805-3319", "3320-3954", "test_videos"]
 
@@ -58,8 +59,13 @@ def main() -> None:
     # every clip whose index % nshards == i, so shards never touch the same clip.
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
+    # --seq: keep the full (num_windows, 768) AST sequence (median ~12 tokens/clip)
+    # instead of the clip mean, so early fusion (①) gets real audio tokens to attend
+    # over. Written to audio_seq/ so it sits alongside the audio_full/ means.
+    ap.add_argument("--seq", action="store_true")
     args = ap.parse_args()
-    os.makedirs(OUT, exist_ok=True)
+    out_dir = OUT_SEQ if args.seq else OUT
+    os.makedirs(out_dir, exist_ok=True)
 
     from huggingface_hub import hf_hub_download
 
@@ -70,7 +76,7 @@ def main() -> None:
     keys = all_i3d_keys()
     if args.nshards > 1:
         keys = [k for i, k in enumerate(keys) if i % args.nshards == args.shard]
-    todo = [k for k in keys if not os.path.exists(f"{OUT}/{safe(k)}.npz")]
+    todo = [k for k in keys if not os.path.exists(f"{out_dir}/{safe(k)}.npz")]
     if args.limit:
         todo = todo[: args.limit]
     print(f"{len(keys)} i3d clips; {len(todo)} need audio features")
@@ -85,15 +91,19 @@ def main() -> None:
                 vp = hf_hub_download(HF_REPO, vmap[k], repo_type="dataset", local_dir=tmp)
                 # AudioExpert decodes the audio track from the video via ffmpeg itself.
                 feats = expert.extract_features(vp)          # (num_windows, 768)
-            emb = feats.mean(axis=0) if len(feats) else np.zeros(768, dtype=np.float32)
-            np.savez(f"{OUT}/{safe(k)}.npz", key=k, embedding=emb.astype(np.float32))
+            if args.seq:
+                seq = feats.astype(np.float32) if len(feats) else np.zeros((1, 768), np.float32)
+                np.savez(f"{out_dir}/{safe(k)}.npz", key=k, sequence=seq)
+            else:
+                emb = feats.mean(axis=0) if len(feats) else np.zeros(768, dtype=np.float32)
+                np.savez(f"{out_dir}/{safe(k)}.npz", key=k, embedding=emb.astype(np.float32))
             done += 1
             if done % 50 == 0:
                 print(f"  {done}/{len(todo)}")
         except Exception as e:
             print(f"  skip {k[:40]}: {e}")
 
-    print(f"done: {done} clips -> {OUT}")
+    print(f"done: {done} clips -> {out_dir}")
 
 
 if __name__ == "__main__":
