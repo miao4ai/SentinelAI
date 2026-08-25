@@ -53,6 +53,11 @@ def video_repo_map() -> dict[str, str]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
+    # Shard the work across N parallel workers (downloads are network-bound, so
+    # a few processes sharing one GPU finish far faster than one). Worker i takes
+    # every clip whose index % nshards == i, so shards never touch the same clip.
+    ap.add_argument("--shard", type=int, default=0)
+    ap.add_argument("--nshards", type=int, default=1)
     args = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
 
@@ -63,6 +68,8 @@ def main() -> None:
     expert = AudioExpert()   # AST, uses GPU if available
 
     keys = all_i3d_keys()
+    if args.nshards > 1:
+        keys = [k for i, k in enumerate(keys) if i % args.nshards == args.shard]
     todo = [k for k in keys if not os.path.exists(f"{OUT}/{safe(k)}.npz")]
     if args.limit:
         todo = todo[: args.limit]
