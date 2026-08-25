@@ -2,7 +2,7 @@
 # Create (or restart) the SentinelAI GPU machine.
 # - g2-standard-8: 8 vCPU / 32GB, 1x NVIDIA L4 (24GB)
 # - PyTorch + CUDA image (drivers preinstalled)
-# - Small 60GB boot disk: datasets live in GCS (gs://sentinelai-data-...),
+# - 100GB boot disk (DLVM image minimum): datasets live in GCS (gs://sentinelai-data-...),
 #   pull what you need with scripts/pull-data.sh (see that script).
 # - cloud-platform scope so the VM can read/write the GCS bucket.
 # - Anti-runaway-cost: 4h hard auto-stop + idle auto-shutdown (120min)
@@ -27,7 +27,7 @@ gcloud compute instances create "$NAME" \
   --machine-type=g2-standard-8 \
   --image-family=pytorch-2-9-cu129-ubuntu-2204-nvidia-580 \
   --image-project=deeplearning-platform-release \
-  --boot-disk-size=60GB \
+  --boot-disk-size=100GB \
   --boot-disk-type=pd-balanced \
   --scopes=cloud-platform \
   --max-run-duration=14400s \
