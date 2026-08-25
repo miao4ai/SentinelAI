@@ -39,8 +39,9 @@ from sentinelai.early_fusion import JointFusionTransformer
 DATA = os.path.expanduser("~/documents/SentinelAI/data/xd-violence")
 I3D = f"{DATA}/data/i3d_rgb"
 AUDIO_FULL = f"{DATA}/audio_full"
+AUDIO_SEQ = f"{DATA}/audio_seq"
 DIRS = ["1-1004", "1005-2004", "2005-2804", "2805-3319", "3320-3954", "test_videos"]
-V_TOK = 32                     # fixed visual token count for the early-fusion transformer
+V_TOK, A_TOK = 32, 16          # fixed token counts for the early-fusion transformer
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -74,6 +75,17 @@ def load_audio_pooled() -> dict[str, np.ndarray]:
     for f in glob.glob(f"{AUDIO_FULL}/*.npz"):
         z = np.load(f, allow_pickle=True)
         out[str(z["key"])] = z["embedding"].astype(np.float32)
+    return out
+
+
+def load_audio_seq() -> dict[str, np.ndarray]:
+    """Per clip: the full AST token sequence -> (num_windows, 768). Used when --seq
+    is set so early fusion (①) attends over real audio tokens, not one mean vector.
+    The pooled positions (②③④⑤) still use its mean, identical to load_audio_pooled."""
+    out = {}
+    for f in glob.glob(f"{AUDIO_SEQ}/*.npz"):
+        z = np.load(f, allow_pickle=True)
+        out[str(z["key"])] = z["sequence"].astype(np.float32)
     return out
 
 
@@ -120,8 +132,16 @@ def torch_probas(model, tr_inputs, ytr, te_inputs, epochs=200, lr=1e-3):
 
 
 def main() -> None:
-    print(f"device={DEVICE}; loading features...")
-    vis, aud = load_i3d_seq(), load_audio_pooled()
+    import argparse
+    ap = argparse.ArgumentParser()
+    # --seq: give ① early fusion the full AST token sequence (from audio_seq/)
+    # instead of a single mean token. ②③④⑤ still use the mean either way.
+    ap.add_argument("--seq", action="store_true")
+    args = ap.parse_args()
+
+    print(f"device={DEVICE}; loading features (audio={'seq tokens' if args.seq else 'mean'})...")
+    vis = load_i3d_seq()
+    aud = load_audio_seq() if args.seq else load_audio_pooled()
     keys = [k for k in vis if k in aud]
     y = np.array([is_violent(k) for k in keys])
     # Group by source movie (key before "__#") so no movie's clips straddle a
@@ -130,11 +150,16 @@ def main() -> None:
     print(f"paired {len(keys)} clips, {len(set(groups))} movies ({y.mean():.0%} violent); "
           f"5-fold GroupKFold (movie-disjoint)\n")
 
-    # features computed once; folds index into them
+    # features computed once; folds index into them. With --seq, aud[k] is a
+    # (num_windows, 768) sequence, so Ap is its mean and As resamples it to A_TOK
+    # real tokens; without, aud[k] is already the (768,) mean and As is one token.
     Vp = np.stack([vis[k].mean(0) for k in keys])                  # (N, 2048)
-    Ap = np.stack([aud[k] for k in keys])                          # (N, 768)
+    Ap = np.stack([aud[k].mean(0) if args.seq else aud[k] for k in keys])   # (N, 768)
     Vs = np.stack([resample(vis[k], V_TOK) for k in keys])         # (N, 32, 2048)
-    As = Ap[:, None, :]                                            # (N, 1, 768) single audio token
+    if args.seq:
+        As = np.stack([resample(aud[k], A_TOK) for k in keys])    # (N, 16, 768) real tokens
+    else:
+        As = Ap[:, None, :]                                       # (N, 1, 768) single audio token
     VpAp = np.concatenate([Vp, Ap], 1)
 
     per_model: dict[str, list[dict]] = defaultdict(list)
