@@ -3,7 +3,8 @@
 Adds the TEXT modality (from `extract_text_features.py`) to the visual+audio
 comparison, on clips that have ALL THREE modalities. Same positions as exp2:
 single-modality baselines, ① early (joint transformer), ② coordinated (CLIP),
-③ feature-concat, ⑤ late-avg.
+③ feature-concat, ④ decision-level (GBDT stacking over the 3 modality probs),
+⑤ late-avg.
 
 Prereq: run `scripts/extract_text_features.py` first to build data/.../text_features.
 Run on the GPU box: python scripts/exp3_three_modal.py
@@ -18,9 +19,11 @@ from collections import defaultdict
 import numpy as np
 import pyarrow.parquet as pq
 import torch
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, cross_val_predict
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 
@@ -91,6 +94,14 @@ def sk_probas(Xtr, ytr, Xte):
     return clf.predict_proba(sc.transform(Xte))[:, 1]
 
 
+def oof_probs(X, y, g):
+    """Out-of-fold LR probabilities on the training set (inner movie-grouped 3-fold),
+    so the ④ meta-learner never sees a modality's prediction on data it trained on."""
+    pipe = make_pipeline(StandardScaler(), LogisticRegression(max_iter=3000))
+    cv = list(GroupKFold(n_splits=3).split(X, y, g))
+    return cross_val_predict(pipe, X, y, cv=cv, method="predict_proba")[:, 1]
+
+
 def torch_probas(model, tr, ytr, te, epochs=200, lr=1e-3):
     model = model.to(DEVICE)
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -140,6 +151,14 @@ def main():
         pt = sk_probas(Tp[tr], ytr, Tp[te])
         p3 = sk_probas(allp[tr], ytr, allp[te])
         p5 = (pv + pa + pt) / 3
+        # ④ decision-level: a GBDT meta-learner over the THREE modality probabilities,
+        # trained on out-of-fold train probs. With 3 inputs incl. a weak text modality,
+        # the tree can actually learn to downweight text (unlike the 2-modal case).
+        gtr = groups[tr]
+        meta_tr = np.c_[oof_probs(Vp[tr], ytr, gtr), oof_probs(Ap[tr], ytr, gtr),
+                        oof_probs(Tp[tr], ytr, gtr)]
+        meta = GradientBoostingClassifier(random_state=0).fit(meta_tr, ytr)
+        p4 = meta.predict_proba(np.c_[pv, pa, pt])[:, 1]
         torch.manual_seed(0)
         p1 = torch_probas(JointFusionTransformer(DIMS, d_model=128, n_layers=2, n_categories=1),
                           {"visual": Vs[tr], "audio": As[tr], "text": Ts[tr]}, ytr,
@@ -150,7 +169,8 @@ def main():
                           {"visual": Vp[te], "audio": Ap[te], "text": Tp[te]})
         for name, pr in [("visual only", pv), ("audio only", pa), ("text only", pt),
                          ("① early (joint transf.)", p1), ("② coordinated (CLIP)", p2),
-                         ("③ feature-concat", p3), ("⑤ late-fusion (avg)", p5)]:
+                         ("③ feature-concat", p3), ("④ decision (GBDT stack)", p4),
+                         ("⑤ late-fusion (avg)", p5)]:
             per_model[name].append(score(yte, pr))
 
     print(f"{'model':<26}{'F1 (mean±std)':>16}{'AUC (mean±std)':>16}")
