@@ -274,7 +274,35 @@ for modality, dim in MODALITY_DIMS.items():
 
 > 语言无关：XD 是西方电影，用英文 prompt 合适；换中文内容时 `--model OFA-Sys/chinese-clip-vit-base-patch16` + 中文 prompt 即可（`clip_screener.py` 已留接口）。原理见 `docs/principle.md` 第一节。
 
-## 10. 建议起点
+## 10. 真实结果（阶段 6 / V2）：Cross-Attention 时空深度融合 ⭐
+
+> 日期：2026-08-28 ｜ 脚本：`scripts/exp6_cross_attention.py`（用现成的 `LitCrossAttention` Lightning 模块，V2 ch.6.3）
+
+**第六章的论证。** 前面的融合把模态**对称**地搅在一起；cross-attention 是**非对称**的深度融合：
+**音频/文本作 Query（"我在找什么"），视频帧时序特征作 Key/Value（"在视频哪一帧/哪一段"）**，
+让"听到尖叫"的 Q 去 attend 出该重点看的那几帧（ROADMAP 6.2）。视频侧 K/V 用 **I3D 的
+`(T,2048)` 时序序列**——I3D 是 3D CNN，本身已编码帧间运动（ch.6.1 的时序动作特征；换
+VideoMAE/TimeSformer 需从原始帧重抽，是后续可替换项）。训练走 **PyTorch Lightning**（ch.6.3）。
+同 exp2/exp3 口径：电影分组 5 折 CV。
+
+| 设置 | F1 | AUC |
+|---|---|---|
+| ⑥ cross-attn（V 帧 K/V + **音频** Q），4502 片段 | 0.936 ± **0.004** | 0.981 ± 0.003 |
+| ⑥ cross-attn（V 帧 K/V + **音频+文本** Q），774 片段 | **0.943 ± 0.011** | 0.981 ± 0.006 |
+
+**关键发现（结构化偏置 vs 数据效率）：**
+1. **小数据（3 模态 774）里 ⑥ 夺魁**：F1 **0.943**，是 §8 三模态表的**最高分**（>⑤ 0.941、②④ 0.939），
+   尤其**碾压 ① early 的 0.907**。同为深度融合，① 是全对称联合 transformer、要 4502 才学得动；
+   ⑥ 的 Q/K/V **结构化偏置**（"用音/文去定向查视频帧"）**省数据得多**，788 就学得很好。
+2. **大数据（2 模态 4502）里 ⑥ 被 ① 反超**：⑥ 0.936（追平 ② coordinated、std 最小 0.004），但
+   ① early 数据喂饱后到 **0.951**——通用性更强的架构天花板更高。
+3. **一句话**：**cross-attention 用"结构"换"数据效率"**。数据少 / 想让线索定向指帧时它最划算
+   （还白送**注意力图**——能看到 Q 关注了哪几帧，天然可解释）；数据多到能喂饱全对称的 ①
+   时，① 反超。**深度融合不是免费的胜利，选哪种要看数据量。**
+
+> 局限：视频 K/V 用的是 I3D（已含时序），**尚未换成 ch.6.1 正牌的 VideoMAE/TimeSformer**（需从原始帧重抽，下一步）。原理见 `docs/principle.md` 第四节。
+
+## 11. 建议起点
 
 **先做实验 1 + 2**（用现有数据 + 一个小下载，不用 GPU）：
 1. XD I3D → 视觉单模态真实基线
@@ -282,7 +310,7 @@ for modality, dim in MODALITY_DIMS.items():
 
 这把合成对比（`fusion.md` §5）升级为"真实"，且成本最低。跑完再决定是否上原始视频做 3 模态（实验 3）。
 
-## 11. 可复现
+## 12. 可复现
 
 - 每个实验固定 seed、记录 split、把结果表写进 `docs/experiment_N.md`。
 - 特征缓存存到 `data/cache/`（已 gitignore），脚本存 `scripts/`。
