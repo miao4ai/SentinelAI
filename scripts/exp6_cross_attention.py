@@ -41,6 +41,7 @@ from sentinelai.train.lit_module import LitCrossAttention
 
 DATA = os.path.expanduser("~/documents/SentinelAI/data/xd-violence")
 I3D = f"{DATA}/data/i3d_rgb"
+VIDEOMAE_SEQ = f"{DATA}/videomae_seq"
 AUDIO_FULL = f"{DATA}/audio_full"
 TEXT = f"{DATA}/text_features"
 DIRS = ["1-1004", "1005-2004", "2005-2804", "2805-3319", "3320-3954", "test_videos"]
@@ -78,6 +79,15 @@ def load_npz_dict(folder):
     return out
 
 
+def load_videomae_seq():
+    """Per clip: VideoMAE temporal sequence (T, 768) — the ch.6.1 transformer video features."""
+    out = {}
+    for f in glob.glob(f"{VIDEOMAE_SEQ}/*.npz"):
+        z = np.load(f, allow_pickle=True)
+        out[str(z["key"])] = z["sequence"].astype(np.float32)
+    return out
+
+
 def score(y, proba):
     pred = (proba >= 0.5).astype(int)
     return {"P": precision_score(y, pred, zero_division=0),
@@ -109,11 +119,13 @@ def train_fold(Vtr, Gtr, ytr, Vte, Gte, epochs, seed):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--modal", type=int, choices=[2, 3], default=2)
+    ap.add_argument("--video", choices=["i3d", "videomae"], default="i3d",
+                    help="video K/V source: I3D (3D CNN) or VideoMAE (transformer, ch.6.1)")
     ap.add_argument("--epochs", type=int, default=50)
     args = ap.parse_args()
 
-    print(f"device={DEVICE}; loading features (modal={args.modal})...")
-    vis = load_i3d_seq()
+    print(f"device={DEVICE}; loading features (modal={args.modal}, video={args.video})...")
+    vis = load_videomae_seq() if args.video == "videomae" else load_i3d_seq()
     aud = load_npz_dict(AUDIO_FULL)
     txt = load_npz_dict(TEXT) if args.modal == 3 else {}
 
@@ -121,7 +133,7 @@ def main():
     y = np.array([is_violent(k) for k in keys])
     groups = np.array([k.split("__")[0] for k in keys])
     print(f"{len(keys)} clips, {len(set(groups))} movies ({y.mean():.0%} violent); "
-          f"video K/V = I3D {V_TOK} frames; "
+          f"video K/V = {args.video} ({V_TOK} frames); "
           f"guide Q = {'audio' if args.modal == 2 else 'audio+text'}\n")
 
     # video K/V: I3D temporal frames (N, T, 2048)
@@ -142,7 +154,7 @@ def main():
     f1 = np.array([m["F1"] for m in folds]); auc = np.array([m["AUC"] for m in folds])
     print(f"{'model':<30}{'F1 (mean±std)':>16}{'AUC (mean±std)':>16}")
     print("-" * 62)
-    name = f"⑥ cross-attn ({'V+A' if args.modal == 2 else 'V+A+T'})"
+    name = f"⑥ cross-attn {args.video} ({'V+A' if args.modal == 2 else 'V+A+T'})"
     print(f"{name:<30}{f'{f1.mean():.3f}±{f1.std():.3f}':>16}{f'{auc.mean():.3f}±{auc.std():.3f}':>16}")
 
 
