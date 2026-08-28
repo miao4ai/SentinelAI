@@ -40,7 +40,8 @@ def safe(key): return "".join(c if c.isalnum() or c in "._-#" else "_" for c in 
 
 def paired_keys() -> list[str]:
     """Clips that have BOTH an I3D feature and our audio feature (exp6's universe)."""
-    audio = {base(os.path.basename(f)) for f in glob.glob(f"{AUDIO_FULL}/*.npz")}
+    # audio_full filenames are safe(key); read the real key stored inside each npz.
+    audio = {str(np.load(f, allow_pickle=True)["key"]) for f in glob.glob(f"{AUDIO_FULL}/*.npz")}
     i3d = {base(os.path.basename(f)) for d in DIRS for f in glob.glob(f"{I3D}/{d}/*.npy")}
     return sorted(i3d & audio)
 
