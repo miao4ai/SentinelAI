@@ -27,10 +27,9 @@ import numpy as np
 DATA = os.path.expanduser("~/documents/SentinelAI/data/xd-violence")
 I3D = f"{DATA}/data/i3d_rgb"
 AUDIO_FULL = f"{DATA}/audio_full"
-OUT = f"{DATA}/videomae_seq"
 HF_REPO = "jherng/xd-violence"
 DIRS = ["1-1004", "1005-2004", "2005-2804", "2805-3319", "3320-3954", "test_videos"]
-MODEL = "MCG-NJU/videomae-base"
+DEFAULT_MODEL = "MCG-NJU/videomae-base"
 T_WINDOWS, FRAMES_PER = 8, 16          # 8 temporal windows, each a 16-frame VideoMAE clip
 
 
@@ -74,7 +73,12 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
+    # --model swaps the VideoMAE checkpoint (e.g. the Kinetics-supervised one to
+    # match I3D); --tag names the output dir so variants don't overwrite each other.
+    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--tag", default="")
     args = ap.parse_args()
+    OUT = f"{DATA}/videomae{('_' + args.tag) if args.tag else ''}_seq"
     os.makedirs(OUT, exist_ok=True)
 
     import torch
@@ -82,8 +86,10 @@ def main() -> None:
     from transformers import VideoMAEImageProcessor, VideoMAEModel
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    proc = VideoMAEImageProcessor.from_pretrained(MODEL)
-    model = VideoMAEModel.from_pretrained(MODEL).to(device).eval()
+    proc = VideoMAEImageProcessor.from_pretrained(args.model)
+    # VideoMAEModel loads the backbone even from a *ForVideoClassification checkpoint
+    # (the classifier head is ignored) — giving supervised backbone features.
+    model = VideoMAEModel.from_pretrained(args.model).to(device).eval()
 
     keys = paired_keys()
     if args.nshards > 1:

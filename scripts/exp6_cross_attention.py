@@ -79,10 +79,10 @@ def load_npz_dict(folder):
     return out
 
 
-def load_videomae_seq():
+def load_videomae_seq(folder):
     """Per clip: VideoMAE temporal sequence (T, 768) — the ch.6.1 transformer video features."""
     out = {}
-    for f in glob.glob(f"{VIDEOMAE_SEQ}/*.npz"):
+    for f in glob.glob(f"{folder}/*.npz"):
         z = np.load(f, allow_pickle=True)
         out[str(z["key"])] = z["sequence"].astype(np.float32)
     return out
@@ -119,13 +119,18 @@ def train_fold(Vtr, Gtr, ytr, Vte, Gte, epochs, seed):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--modal", type=int, choices=[2, 3], default=2)
-    ap.add_argument("--video", choices=["i3d", "videomae"], default="i3d",
-                    help="video K/V source: I3D (3D CNN) or VideoMAE (transformer, ch.6.1)")
+    ap.add_argument("--video", choices=["i3d", "videomae", "videomae_k400"], default="i3d",
+                    help="video K/V: I3D (3D CNN) | VideoMAE self-sup | VideoMAE Kinetics-supervised")
     ap.add_argument("--epochs", type=int, default=50)
     args = ap.parse_args()
 
     print(f"device={DEVICE}; loading features (modal={args.modal}, video={args.video})...")
-    vis = load_videomae_seq() if args.video == "videomae" else load_i3d_seq()
+    if args.video == "videomae":
+        vis = load_videomae_seq(VIDEOMAE_SEQ)
+    elif args.video == "videomae_k400":
+        vis = load_videomae_seq(f"{DATA}/videomae_k400_seq")
+    else:
+        vis = load_i3d_seq()
     aud = load_npz_dict(AUDIO_FULL)
     txt = load_npz_dict(TEXT) if args.modal == 3 else {}
 
