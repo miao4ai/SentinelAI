@@ -306,19 +306,27 @@ VideoMAE/TimeSformer 需从原始帧重抽，是后续可替换项）。训练�
 **VideoMAE**（`MCG-NJU/videomae-base`，每片段 8 窗×16 帧→patch 均值→`(8,768)` 序列，
 脚本 `extract_videomae_features.py`），把 K/V 换成它重跑（`exp6 --video videomae`）。同片段同折。
 
+于是抽了两版 VideoMAE 序列（`MCG-NJU/videomae-base`，每片段 8 窗×16 帧→patch 均值→`(8,768)`，
+脚本 `extract_videomae_features.py`）：**自监督预训练版**，以及**Kinetics 监督微调版**
+（`videomae-base-finetuned-kinetics`，为了和 I3D 一样都是"Kinetics 监督"、公平对打）。把 K/V
+换成它们重跑（`exp6 --video videomae|videomae_k400`）。同片段同折。
+
 | 视频 K/V 来源 | modal 2（V+A）| modal 3（V+A+T）|
 |---|---|---|
 | **I3D**（3D CNN，任务预提取） | **0.936 ± 0.004** | **0.943 ± 0.011** |
 | VideoMAE-base（自监督，直接 mean-pool） | 0.924 ± 0.015 | 0.925 ± 0.013 |
+| VideoMAE-**k400**（Kinetics 监督微调） | 0.921 ± 0.008 | **0.808 ± 0.048** |
 
-**结论：换 VideoMAE 反而更差（两档都低 0.012–0.018）。** 这是有价值的**负结果**：
-- **I3D 是任务匹配的特征**——在 Kinetics 上训练、又是 XD 基准专门预提取的，天生贴合动作/暴力。
-- **VideoMAE-base 是自监督预训练、我们直接拿来 mean-pool、没在视频上微调**——通用表示不如
-  任务对齐的 I3D；何况 patch 均值池化很粗。
-- "切菜 vs 捅人"的动机没错，但 **I3D（3D 卷积）本身已抓住短时运动**；想让 transformer 时序
-  特征真正超过 I3D，多半得**在视频上微调 VideoMAE**，而非拿现成特征。**架构更"高级"≠ 特征更好用。**
+**结论：两版 VideoMAE 都打不过 I3D，而且"监督版"更差、还不稳。** 一个连着一个的负结果：
+1. **自监督 VideoMAE < I3D**（两档低 0.012–0.018）。第一反应：也许是因为它没像 I3D 那样监督训练？
+2. **于是换 Kinetics 监督微调版——结果更差**（modal 3 崩到 0.808、std 0.048）。**"缺监督"这个
+   解释被推翻了。** 反而印证了另一个已知现象：**在某任务上分类微调过的 backbone 特征会更"专"、
+   迁移性更差**（fine-tuned features 迁移常不如预训练 features），小数据上还不稳。
+3. **真正的教训**：**I3D 是为这个暴力基准专门预提取的特征，天生任务对齐，很难被现成 swap 超越**；
+   何况我们对 VideoMAE 只做了粗糙的 patch mean-pool。**架构更"高级"、甚至"更监督"都 ≠ 特征更好用。**
+   想真正超过 I3D，多半得**端到端在暴力任务上微调视频编码器**，而不是拿任何现成特征。
 
-> 原理见 `docs/principle.md` 第四节。VideoMAE 序列已备份到 GCS（`data/xd-violence/videomae_seq/`）。
+> 原理见 `docs/principle.md` 第四节。两版 VideoMAE 序列已备份到 GCS（`videomae_seq/`、`videomae_k400_seq/`）。
 
 ## 11. 建议起点
 
