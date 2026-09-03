@@ -257,6 +257,86 @@ print(f"其中 ⑤late 被带错：{int(((misled['⑤late']>=0.5)!=misled['label
 misled[["key", "label", "visual", "audio", "text", "②coord", "④gbdt", "⑤late", "⑥xattn"]].round(2).head(12)
 
 # %% [markdown]
+# ## 8. 错例可视化 —— 拉原始数据（帧 / 音频 / 转写）来看
+# 给定一个片段 key，把**原始画面、原始音频（波形+频谱+可播放）、原始转写文本**都拉出来，
+# 配上各方法对它的预测，方便直接肉眼分析"到底错在哪"。转写已缓存（抽文本时存了 `text`），
+# 帧和音频从 HF 原视频现抽。
+
+# %%
+import tempfile, subprocess
+import matplotlib.pyplot as plt
+from PIL import Image
+from IPython.display import Audio, display
+
+HF_REPO = "jherng/xd-violence"
+# 原始转写文本（抽文本时已缓存在 text_features 的 npz 的 "text" 字段里）
+txt_raw = {}
+for f in glob.glob(f"{DATA}/text_features/*.npz"):
+    z = np.load(f, allow_pickle=True)
+    txt_raw[str(z["key"])] = (str(z["text"]) if "text" in z.files else "")
+
+_vmap = {}
+def vmap():
+    global _vmap
+    if not _vmap:
+        from huggingface_hub import list_repo_files
+        _vmap = {b(os.path.basename(f)): f for f in list_repo_files(HF_REPO, repo_type="dataset") if f.endswith(".mp4")}
+    return _vmap
+
+def decode_audio(path, sr=16000):
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-i", path, "-f", "s16le", "-ac", "1",
+                          "-ar", str(sr), "-loglevel", "error", "-"], capture_output=True).stdout
+    return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0, sr
+
+def inspect_clip(key, n_frames=8):
+    """错例可视化：原始帧 + 音频(波形/频谱/播放器) + 转写 + 各方法预测。"""
+    from huggingface_hub import hf_hub_download
+    row = df[df.key == key].iloc[0]
+    print(f"clip: {key}\n电影: {row.movie}  |  真实标签: {'暴力' if row.label else '正常'}")
+    tbl = [{"方法": m, "概率": round(float(row[m]), 2),
+            "预测": "暴力" if row[m + "_pred"] else "正常",
+            "对错": "✗错" if row[m + "_pred"] != row.label else "✓对"} for m in probs]
+    display(pd.DataFrame(tbl))
+    print(f"📝 原始转写: {txt_raw.get(key) or '(无对白 / 零向量)'}")
+    vm = vmap()
+    if key not in vm:
+        print("（HF 上没有此片段的原视频，跳过帧/音频）"); return
+    with tempfile.TemporaryDirectory() as tmp:
+        vp = hf_hub_download(HF_REPO, vm[key], repo_type="dataset", local_dir=tmp)
+        try:
+            dur = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries",
+                        "format=duration", "-of", "default=nk=1:nw=1", vp]).strip() or 0) or 10.0
+        except Exception:
+            dur = 10.0
+        # 原始帧
+        subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-i", vp, "-vf",
+                        f"fps={max(n_frames/dur,0.001)}", "-frames:v", str(n_frames), f"{tmp}/f_%02d.jpg"])
+        fs = sorted(glob.glob(f"{tmp}/f_*.jpg"))
+        if fs:
+            fig, ax = plt.subplots(1, len(fs), figsize=(2.2 * len(fs), 2.4))
+            for a, fp in zip(np.atleast_1d(ax), fs):
+                a.imshow(Image.open(fp)); a.axis("off")
+            fig.suptitle("original frames", fontsize=9); plt.show()
+        # 原始音频：波形 + 频谱 + 可播放
+        wav, sr = decode_audio(vp)
+        if len(wav):
+            fig, ax = plt.subplots(2, 1, figsize=(10, 4))
+            ax[0].plot(np.linspace(0, len(wav) / sr, len(wav)), wav, lw=0.4)
+            ax[0].set(title="waveform", xlabel="sec")
+            ax[1].specgram(wav, Fs=sr, NFFT=1024, noverlap=512, cmap="magma")
+            ax[1].set(title="spectrogram", xlabel="sec", ylabel="Hz")
+            plt.tight_layout(); plt.show()
+            display(Audio(wav, rate=sr))
+
+# %% [markdown]
+# **示例**：挑一个被**所有方法都判错**的最难样本，把原始数据拉出来看它为什么难。
+# 换任意 key 即可分析别的错例，例如 `inspect_clip(mis[mis["方法"]=="⑤late"].iloc[0]["key"])`。
+
+# %%
+demo_key = df[df["错误方法数"] == len(probs)].iloc[0]["key"] if (df["错误方法数"] == len(probs)).any() else keys[0]
+inspect_clip(demo_key)
+
+# %% [markdown]
 # ## 结论（看数字填）
 # - 各方法错误数见 §3；全判错的"硬样本"见 §4（多半是镜头模糊/标注边界）。
 # - §5 显示 ① early 和 ⑤ late 各自救回的片段，解释交叉点为什么发生在样本层面。
