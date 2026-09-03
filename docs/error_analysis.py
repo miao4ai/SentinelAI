@@ -13,9 +13,12 @@
 # > 前置：在 GPU 机器上跑，`data/xd-violence/` 下要有 i3d_rgb / audio_full / text_features。
 
 # %%
-import glob, os
+import glob, os, logging, warnings
 from collections import defaultdict
 import numpy as np, pandas as pd, torch
+# 让 Lightning 别把 GPU/TPU 横幅刷进每个 cell 的输出
+logging.getLogger("lightning.pytorch").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore")
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.model_selection import GroupKFold, cross_val_predict
