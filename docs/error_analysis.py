@@ -35,7 +35,6 @@ I3D = f"{DATA}/data/i3d_rgb"
 DIRS = ["1-1004", "1005-2004", "2005-2804", "2805-3319", "3320-3954", "test_videos"]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 V_TOK, A_TOK = 32, 16
-np.set_option = None  # noqa
 pd.set_option("display.width", 200); pd.set_option("display.max_colwidth", 46)
 
 def b(n): return n.replace(".npy", "").replace(".mp4", "")
