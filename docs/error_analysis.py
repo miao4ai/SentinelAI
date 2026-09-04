@@ -279,8 +279,15 @@ _vmap = {}
 def vmap():
     global _vmap
     if not _vmap:
-        from huggingface_hub import list_repo_files
-        _vmap = {b(os.path.basename(f)): f for f in list_repo_files(HF_REPO, repo_type="dataset") if f.endswith(".mp4")}
+        # Reuse the cached HF listing if present (exp7 built it) — avoids the API's
+        # rate limit (429) when the notebook is executed non-interactively.
+        cache = f"{DATA}/add_normals/vmap.json"
+        if os.path.exists(cache):
+            import json
+            _vmap = json.load(open(cache))
+        else:
+            from huggingface_hub import list_repo_files
+            _vmap = {b(os.path.basename(f)): f for f in list_repo_files(HF_REPO, repo_type="dataset") if f.endswith(".mp4")}
     return _vmap
 
 def decode_audio(path, sr=16000):
@@ -329,12 +336,34 @@ def inspect_clip(key, n_frames=8):
             display(Audio(wav, rate=sr))
 
 # %% [markdown]
-# **示例**：挑一个被**所有方法都判错**的最难样本，把原始数据拉出来看它为什么难。
-# 换任意 key 即可分析别的错例，例如 `inspect_clip(mis[mis["方法"]=="⑤late"].iloc[0]["key"])`。
+# ## 9. 批量错例可视化：5 个误报(FP) + 5 个漏报(FN)
+# 以 **⑤ late-fusion** 为参照方法（简单集成、代表性强），挑它**最自信判错**的两类错例：
+# **误报 FP**（真实正常、却判成暴力，按违规分从高到低）和 **漏报 FN**（真实暴力、却判成正常，
+# 按违规分从低到高）。每个都把原始帧/音频/转写/各方法预测拉出来，方便分别分析两类错误的成因。
+# 只挑 HF 上有原视频的片段。
 
 # %%
-demo_key = df[df["错误方法数"] == len(probs)].iloc[0]["key"] if (df["错误方法数"] == len(probs)).any() else keys[0]
-inspect_clip(demo_key)
+REF = "⑤late"                                   # 参照方法（可换 "②coord" / "⑥xattn" 等）
+have_video = df["key"].isin(vmap().keys())
+fp = df[(df["label"] == 0) & (df[REF + "_pred"] == 1) & have_video].sort_values(REF, ascending=False)
+fn = df[(df["label"] == 1) & (df[REF + "_pred"] == 0) & have_video].sort_values(REF, ascending=True)
+print(f"参照 {REF}: 可视化的候选 —— 误报 FP {len(fp)} 个, 漏报 FN {len(fn)} 个（取各前 5）")
+
+# %% [markdown]
+# ### 9.1 误报 False Positives —— 真实正常，被判成暴力
+# 看这些"正常却被当暴力"的片段有什么共性（打闹/体育/音效大/画面昏暗…）。
+
+# %%
+for k in fp["key"].head(5):
+    inspect_clip(k); print("\n" + "=" * 90 + "\n")
+
+# %% [markdown]
+# ### 9.2 漏报 False Negatives —— 真实暴力，被判成正常
+# 看这些"暴力却被漏掉"的片段有什么共性（暴力短促/无音效/远景/对白正常…）。
+
+# %%
+for k in fn["key"].head(5):
+    inspect_clip(k); print("\n" + "=" * 90 + "\n")
 
 # %% [markdown]
 # ## 结论（看数字填）
