@@ -333,7 +333,10 @@ def inspect_clip(key, n_frames=8):
             ax[1].specgram(wav, Fs=sr, NFFT=1024, noverlap=512, cmap="magma")
             ax[1].set(title="spectrogram", xlabel="sec", ylabel="Hz")
             plt.tight_layout(); plt.show()
-            display(Audio(wav, rate=sr))
+            # (playable Audio widget omitted — its base64 wav bloats the notebook to
+            #  tens of MB and breaks large git pushes; the waveform+spectrogram above
+            #  carry the audio visually. To hear it interactively, run locally and add
+            #  `display(Audio(wav, rate=sr))`.)
 
 # %% [markdown]
 # ## 9. 批量错例可视化：5 个误报(FP) + 5 个漏报(FN)
