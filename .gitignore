@@ -7,4 +7,3 @@ __pycache__/
 .uv/
 uv.lock
 .pytest_cache/
-docs/error_analysis.ipynb
