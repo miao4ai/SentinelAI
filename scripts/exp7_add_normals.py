@@ -70,7 +70,15 @@ def main():
 
     # Build the work list: XD sample (real labels) + all Kinetics clips (label=normal).
     xd_keys = sample_keys(all_i3d_keys(), args.n, 0)
-    vmap = video_repo_map()
+    # Cache the HF repo file listing to disk — listing it per shard hits the API's
+    # rate limit (429). Built once (below), every shard reads the json.
+    import json
+    vmap_cache = f"{OUT}/vmap.json"
+    if os.path.exists(vmap_cache):
+        vmap = json.load(open(vmap_cache))
+    else:
+        vmap = video_repo_map()
+        json.dump(vmap, open(vmap_cache, "w"))
     xd_items = [("xd", k, vmap.get(k)) for k in xd_keys if k in vmap]
     kin_files = sorted(glob.glob(f"{KIN}/**/*.mp4", recursive=True))
     kin_items = [("kin", os.path.splitext(os.path.basename(f))[0], f) for f in kin_files]
