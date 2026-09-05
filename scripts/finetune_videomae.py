@@ -34,6 +34,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 def base(n): return n.replace(".npy", "").replace(".mp4", "")
 def is_violent(n): return 0 if "_label_A" in n else 1
+def safe(k): return "".join(c if c.isalnum() or c in "._-#" else "_" for c in k)
 
 
 class FramesDS(Dataset):
@@ -73,7 +74,7 @@ def i3d_baseline(train_keys, test_keys):
     pooled = {}
     for d in DIRS:
         for f in glob.glob(f"{I3D}/{d}/*.npy"):
-            k = base(os.path.basename(f))
+            k = safe(base(os.path.basename(f)))          # match the frames' safe-key space
             if k in train_keys or k in test_keys:
                 a = np.load(f); a = a.mean(1) if a.ndim == 3 else a
                 pooled[k] = a.mean(0).astype(np.float32)
@@ -98,7 +99,7 @@ def main():
     from transformers import VideoMAEForVideoClassification, VideoMAEImageProcessor
 
     files = sorted(glob.glob(f"{FRAMES}/*.npz"))
-    keys = [base(os.path.basename(f)) for f in files]
+    keys = [os.path.splitext(os.path.basename(f))[0] for f in files]   # safe(key), no .npz
     groups = np.array([k.split("__")[0] for k in keys])
     y = np.array([is_violent(k) for k in keys])
     tr, te = next(GroupShuffleSplit(1, test_size=0.2, random_state=0).split(files, y, groups))
@@ -131,8 +132,8 @@ def main():
 
     p, yte, kte = predict(model, te_loader)
     f1_v, auc_v = f1_score(yte, (p >= 0.5).astype(int)), roc_auc_score(yte, p)
-    f1_i, auc_i = i3d_baseline(set(base(os.path.basename(f)) for f in tr_files),
-                               set(base(os.path.basename(f)) for f in te_files))
+    f1_i, auc_i = i3d_baseline(set(os.path.splitext(os.path.basename(f))[0] for f in tr_files),
+                               set(os.path.splitext(os.path.basename(f))[0] for f in te_files))
     print("\n=== visual-only, same movie-grouped test split ===")
     print(f"  frozen I3D          F1={f1_i:.3f}  AUC={auc_i:.3f}")
     print(f"  VideoMAE end2end FT F1={f1_v:.3f}  AUC={auc_v:.3f}")
