@@ -34,12 +34,19 @@ def i3d_key(f): return os.path.basename(f).replace("_i3d.npy", "").replace(".npy
 
 
 def load_i3d(folder):
+    # Cache the pooled (2048-d) vectors: the raw ten-crop I3D is ~60G and slow to
+    # re-read every run (and the long GPU-idle read once tripped idle-shutdown).
+    cache = f"{folder}_pooled.npz"
+    if os.path.exists(cache):
+        z = np.load(cache, allow_pickle=True)
+        return {k: z[k].astype(np.float32) for k in z.files}
     out = {}
     for f in glob.glob(f"{folder}/*.npy"):
         a = np.load(f)
         if a.ndim == 3:
             a = a.mean(axis=1)
         out[i3d_key(f)] = a.mean(axis=0).astype(np.float32)
+    np.savez(cache, **out)
     return out
 
 
