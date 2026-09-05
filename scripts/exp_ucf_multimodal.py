@@ -15,12 +15,21 @@ import os
 
 import numpy as np
 import torch
+import lightning.pytorch as pl
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.model_selection import KFold, cross_val_predict
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
 
 from sentinelai.coordinated_fusion import CoordinatedFusion
+from sentinelai.early_fusion import JointFusionTransformer
+from sentinelai.train.lit_module import LitCrossAttention
+
+V_TOK = 32
 
 DATA = os.path.expanduser("~/documents/SentinelAI/data/ucf-crime")
 TRAIN_I3D = f"{DATA}/UCF_Train_ten_crop_i3d"
@@ -58,6 +67,34 @@ def load_npz(folder):
     return out
 
 
+def resample(x, n):
+    if len(x) == 0:
+        return np.zeros((n, x.shape[1]), np.float32)
+    return x[np.linspace(0, len(x) - 1, n).round().astype(int)].astype(np.float32)
+
+
+def load_i3d_seq(folder):
+    """(T, 2048) temporal token sequence per clip (resampled to V_TOK), cached."""
+    cache = f"{folder}_seq{V_TOK}.npz"
+    if os.path.exists(cache):
+        z = np.load(cache, allow_pickle=True)
+        return {k: z[k].astype(np.float32) for k in z.files}
+    out = {}
+    for f in glob.glob(f"{folder}/*.npy"):
+        a = np.load(f)
+        if a.ndim == 3:
+            a = a.mean(axis=1)                 # (T, 2048)
+        out[i3d_key(f)] = resample(a, V_TOK)
+    np.savez(cache, **out)
+    return out
+
+
+def oof3(X, y):
+    """Out-of-fold LR probs on the train set (inner 3-fold) for the ④ stacker."""
+    pipe = make_pipeline(StandardScaler(), LogisticRegression(max_iter=3000, class_weight="balanced"))
+    return cross_val_predict(pipe, X, y, cv=KFold(3, shuffle=True, random_state=0), method="predict_proba")[:, 1]
+
+
 def sk_probas(Xtr, ytr, Xte):
     sc = StandardScaler().fit(Xtr)
     clf = LogisticRegression(max_iter=3000, class_weight="balanced").fit(sc.transform(Xtr), ytr)
@@ -79,6 +116,36 @@ def torch_coord(tr, ytr, te):
     with torch.no_grad():
         o = m(E); lo = o[0] if isinstance(o, tuple) else o
         return torch.sigmoid(lo).squeeze(1).cpu().numpy()
+
+
+def torch_probas(model, tr, ytr, te, epochs=300):
+    model = model.to(DEVICE)
+    opt = torch.optim.AdamW(model.parameters(), 1e-3); lf = nn.BCEWithLogitsLoss()
+    y = torch.tensor(ytr, dtype=torch.float32, device=DEVICE)[:, None]
+    T = {k: torch.tensor(v, device=DEVICE) for k, v in tr.items()}
+    E = {k: torch.tensor(v, device=DEVICE) for k, v in te.items()}
+    for _ in range(epochs):
+        model.train(); opt.zero_grad(); o = model(T); lo = o[0] if isinstance(o, tuple) else o
+        lf(lo, y).backward(); opt.step()
+    model.eval()
+    with torch.no_grad():
+        o = model(E); lo = o[0] if isinstance(o, tuple) else o
+        return torch.sigmoid(lo).squeeze(1).cpu().numpy()
+
+
+def crossattn(Vs_tr, Atr, Ttr, ytr, Vs_te, Ate, Tte):
+    """⑥: I3D frame sequence as K/V, [audio, text] as the query."""
+    G_tr = np.stack([Atr, Ttr], 1); G_te = np.stack([Ate, Tte], 1)   # (N, 2, 768)
+    pl.seed_everything(0, verbose=False)
+    lit = LitCrossAttention(video_dim=2048, guide_dim=768, n_categories=1, d_model=128, n_heads=4)
+    ds = TensorDataset(torch.tensor(Vs_tr), torch.tensor(G_tr), torch.tensor(ytr[:, None], dtype=torch.float32))
+    pl.Trainer(max_epochs=50, accelerator="auto", devices=1, logger=False, enable_checkpointing=False,
+               enable_progress_bar=False, enable_model_summary=False, limit_val_batches=0,
+               num_sanity_val_steps=0).fit(lit, DataLoader(ds, batch_size=128, shuffle=True))
+    lit.eval()
+    with torch.no_grad():
+        return lit.model.predict_proba(torch.tensor(Vs_te, device=lit.device),
+                                       torch.tensor(G_te, device=lit.device))[:, 0].cpu().numpy()
 
 
 def report(y, probs):
@@ -120,6 +187,26 @@ def main():
     probs["⑤ late-fusion (avg)"] = np.mean(late_parts, axis=0)
     probs["② coordinated"] = torch_coord(
         {"visual": Vtr, "audio": Atr, "text": Ttr}, ytr, {"visual": Vte, "audio": Ate, "text": Tte})
+
+    if has_text:
+        # ④ decision-level: GBDT stack on the 3 modality probs, OOF-trained (防泄漏)
+        meta_tr = np.c_[oof3(Vtr, ytr), oof3(Atr, ytr), oof3(Ttr, ytr)]
+        gb = GradientBoostingClassifier(random_state=0).fit(meta_tr, ytr)
+        probs["④ decision (GBDT)"] = gb.predict_proba(np.c_[pv, pa, pt])[:, 1]
+
+        # ① early + ⑥ cross-attn need I3D temporal sequences (audio/text = 1 token each)
+        vstr, vste = load_i3d_seq(TRAIN_I3D), load_i3d_seq(TEST_I3D)
+        Vs_tr = np.stack([vstr[k] for k in ktr]); Vs_te = np.stack([vste[k] for k in kte])
+        As_tr, As_te = Atr[:, None, :], Ate[:, None, :]
+        Ts_tr, Ts_te = Ttr[:, None, :], Tte[:, None, :]
+        dims = {"visual": 2048, "audio": 768, "text": 768}
+        torch.manual_seed(0)
+        probs["① early (joint transf.)"] = torch_probas(
+            JointFusionTransformer(dims, d_model=128, n_layers=2, n_categories=1),
+            {"visual": Vs_tr, "audio": As_tr, "text": Ts_tr}, ytr,
+            {"visual": Vs_te, "audio": As_te, "text": Ts_te})
+        probs["⑥ cross-attn"] = crossattn(Vs_tr, Atr, Ttr, ytr, Vs_te, Ate, Tte)
+
     report(yte, probs)
 
 
