@@ -10,7 +10,7 @@
 # After first create: run scripts/setup on the VM to install deps + pull data.
 # If L4 is stocked out, swap --machine-type to e2-standard-8 (CPU) for non-GPU work.
 set -e
-PROJECT=just-aloe-499321-q2
+PROJECT=ace-interface-508305-d8
 ZONE=us-central1-b
 NAME=sentinel-gpu
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,7 +27,7 @@ gcloud compute instances create "$NAME" \
   --machine-type=g2-standard-8 \
   --image-family=pytorch-2-9-cu129-ubuntu-2204-nvidia-580 \
   --image-project=deeplearning-platform-release \
-  --boot-disk-size=100GB \
+  --boot-disk-size=300GB \
   --boot-disk-type=pd-balanced \
   --scopes=cloud-platform \
   --max-run-duration=14400s \

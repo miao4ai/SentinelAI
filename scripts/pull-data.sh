@@ -7,7 +7,7 @@
 #   xd  = XD-Violence (I3D visual + AST audio + text features) ~14G — fusion exps
 #   ucf = UCF-Crime I3D ~62G  |  kinetics = Kinetics-400 ~2G  |  all = everything
 set -e
-BUCKET=gs://sentinelai-data-just-aloe-499321
+BUCKET=gs://sentinelai-data-ace-interface-508305
 DEST="$HOME/documents/SentinelAI/data"
 what="${1:-xd}"
 mkdir -p "$DEST"
