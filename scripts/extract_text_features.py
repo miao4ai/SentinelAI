@@ -44,12 +44,15 @@ def safe(key: str) -> str:
 
 
 def pairable_keys() -> list[str]:
-    """Clips that already have BOTH visual (I3D) and audio (AST) features."""
+    """Clips that already have BOTH visual (I3D) and audio (our self-extracted AST).
+
+    Originally paired against the third-party audio parquet (a 20% subset, 788
+    clips); since we now extract audio ourselves for every clip (audio_full/),
+    text pairs against that instead — coverage grows to ~4490.
+    """
     i3d = {base(os.path.basename(f)) for d in DIRS for f in glob.glob(f"{I3D}/{d}/*.npy")}
-    aud = set()
-    for p in glob.glob(f"{AUDIO}/**/*.parquet", recursive=True):
-        for v in pq.read_table(p, columns=["video_id"]).to_pandas()["video_id"]:
-            aud.add(base(v))
+    aud = {str(np.load(f, allow_pickle=True)["key"])
+           for f in glob.glob(f"{DATA}/audio_full/*.npz")}
     return sorted(i3d & aud)
 
 
@@ -83,6 +86,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="process at most N new clips (0 = all)")
     ap.add_argument("--whisper", default="base", help="faster-whisper model size")
+    ap.add_argument("--shard", type=int, default=0)
+    ap.add_argument("--nshards", type=int, default=1)
     args = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
 
@@ -108,6 +113,8 @@ def main() -> None:
         return h.cpu().numpy().astype(np.float32), True
 
     keys = pairable_keys()
+    if args.nshards > 1:
+        keys = [k for i, k in enumerate(keys) if i % args.nshards == args.shard]
     todo = [k for k in keys if not os.path.exists(f"{OUT}/{safe(k)}.npz")]
     if args.limit:
         todo = todo[: args.limit]
