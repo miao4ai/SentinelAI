@@ -54,11 +54,19 @@ def pairable_keys() -> list[str]:
 
 
 def video_repo_map() -> dict[str, str]:
-    """Map clip key -> its .mp4 path inside the HF repo (robust to folder layout)."""
+    """Map clip key -> its .mp4 path inside the HF repo (robust to folder layout).
+    Uses the shared cached listing to avoid the HF API rate limit (429)."""
+    import json
+    cache = f"{DATA}/add_normals/vmap.json"
+    if os.path.exists(cache):
+        return json.load(open(cache))
     from huggingface_hub import list_repo_files
 
     files = list_repo_files(HF_REPO, repo_type="dataset")
-    return {base(os.path.basename(f)): f for f in files if f.endswith(".mp4")}
+    vmap = {base(os.path.basename(f)): f for f in files if f.endswith(".mp4")}
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    json.dump(vmap, open(cache, "w"))
+    return vmap
 
 
 def extract_wav(video_path: str, wav_path: str) -> bool:
