@@ -27,7 +27,7 @@ gcloud compute instances create "$NAME" \
   --machine-type=g2-standard-8 \
   --image-family=pytorch-2-9-cu129-ubuntu-2204-nvidia-580 \
   --image-project=deeplearning-platform-release \
-  --boot-disk-size=300GB \
+  --boot-disk-size=250GB \
   --boot-disk-type=pd-balanced \
   --scopes=cloud-platform \
   --max-run-duration=14400s \
