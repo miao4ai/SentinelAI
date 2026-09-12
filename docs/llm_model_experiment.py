@@ -301,3 +301,75 @@ if RUN_MERGE:
     proc.save_pretrained(f"{DATA}/qwen2.5-vl-7b-moderation")
 else:
     print("RUN_MERGE=False — 合并代码见上, 部署走 40MB adapter 挂/摘的两模式方案即可")
+
+# %% [markdown]
+# ## 8.3 PEFT 完成后：各项指标提高了多少
+#
+# **问题**：QLoRA 微调完成后，相对零样本底座，各项 metric 的提升有多少？
+#
+# **实验过程**（`scripts/finetune_qwen_qlora.py`，完整跑过两次结论一致）：
+#
+# 1. **数据**：frames16 全部片段按**电影分组** 80/20 切分（同一部电影不跨训练/测试，防泄漏），
+#    训练侧构成 ~3.3k 条 "8 帧 + yes/no 提问 → 答案" 指令对；
+# 2. **训练**：8.2 的配方——4-bit NF4 冻结底座 + r=16 LoRA（attention+MLP），**loss 只加在
+#    答案 token 上**，1 epoch（L4 单卡约 3 小时，末期 mean_loss≈0.10）；
+# 3. **评测**：从**留出电影**抽 400 个片段，每个片段打分**两次**——adapter ON（微调）与
+#    adapter OFF（零样本）——除 LoRA 权重外完全相同，是严格成对的对照；
+#    每片段分数 = 首 token 的 P(yes)。分数已缓存（`qwen_qlora_scores.npz`），
+#    下面直接从缓存计算指标，无需重新训练/推理。
+
+# %%
+import pandas as pd
+from sklearn.metrics import (accuracy_score, average_precision_score, f1_score,
+                             precision_score, recall_score, roc_auc_score, roc_curve)
+
+z = np.load(f"{DATA}/qwen_qlora_scores.npz", allow_pickle=True)
+yv, s_zs, s_ft = z["y"], z["s_zs"], z["s_ft"]
+print(f"成对评测集: {len(yv)} 片段, {yv.mean():.0%} 暴力")
+
+def metrics(s):
+    pred = (s >= 0.5).astype(int)
+    o = np.argsort(-s); k = max(1, len(yv) // 10)
+    return {"AUC": roc_auc_score(yv, s), "AP": average_precision_score(yv, s),
+            "F1@0.5": f1_score(yv, pred),
+            "Precision@0.5": precision_score(yv, pred, zero_division=0),
+            "Recall@0.5": recall_score(yv, pred), "Accuracy@0.5": accuracy_score(yv, pred),
+            "p@top10%": yv[o[:k]].mean()}
+
+tbl = pd.DataFrame({"零样本 (adapter off)": metrics(s_zs), "QLoRA (adapter on)": metrics(s_ft)})
+tbl["Δ 提升"] = tbl["QLoRA (adapter on)"] - tbl["零样本 (adapter off)"]
+tbl.round(3)
+
+# %%
+fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+for tag, s in [("zero-shot", s_zs), ("QLoRA", s_ft)]:
+    fpr, tpr, _ = roc_curve(yv, s)
+    ax[0].plot(fpr, tpr, label=f"{tag}  AUC={roc_auc_score(yv, s):.3f}")
+ax[0].plot([0, 1], [0, 1], "k--", lw=0.5)
+ax[0].set(title="ROC", xlabel="FPR", ylabel="TPR"); ax[0].legend()
+for a, (tag, s) in zip(ax[1:], [("zero-shot P(yes)", s_zs), ("QLoRA P(yes)", s_ft)]):
+    a.hist(s[yv == 0], bins=30, alpha=0.6, label="normal")
+    a.hist(s[yv == 1], bins=30, alpha=0.6, label="violent")
+    a.axvline(0.5, color="k", ls="--", lw=0.8); a.set(title=tag, xlabel="P(yes)"); a.legend()
+plt.tight_layout(); plt.show()
+
+# %% [markdown]
+# **结果与结论**：
+#
+# | 指标 | 零样本 | QLoRA | Δ |
+# |---|---|---|---|
+# | AUC | 0.900 | **0.990** | +0.090 |
+# | F1@0.5 | 0.301 | **0.948** | **+0.647** |
+# | p@top10% | 1.000 | 1.000 | 0 |
+#
+# 1. **排序质量**（AUC/AP）：0.900 → 0.990——零样本本来就排得不错，微调把中段的错排
+#    几乎清零，追平了 ① early 融合在同规模数据上的水平。
+# 2. **阈值指标暴涨的真正原因是校准**：F1@0.5 从 0.301 → 0.948（+0.65）。看右侧直方图：
+#    零样本的 P(yes) 整体压得很低（模型嘴上保守，"yes" 说得少），0.5 阈值下 recall 极低；
+#    微调后两类分布被拉开并对齐到 0.5 两侧。也就是说**零样本欠的主要是校准，微调一并
+#    修好了校准 + 排序**——这与 §4.8 "阈值校准能救回大半" 的结论互相印证。
+# 3. **头部精度不变**：p@top10% 两者都是 1.000——最显眼的暴力零样本就能抓住，
+#    PEFT 的增益集中在**中段样本与运营可用的固定阈值**上。
+# 4. **性价比**：40MB adapter、0.57% 可训练参数、单卡 1 epoch，换来 F1 +0.65；
+#    且 8.2 的成对打分显示 hard example 上仍有残余误差——微调不是魔法，
+#    是把决策边界推向任务分布。
