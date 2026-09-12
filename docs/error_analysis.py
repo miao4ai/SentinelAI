@@ -266,7 +266,7 @@ misled[["key", "label", "visual", "audio", "text", "②coord", "④gbdt", "⑤la
 import tempfile, subprocess
 import matplotlib.pyplot as plt
 from PIL import Image
-from IPython.display import Audio, display
+from IPython.display import Audio, display, HTML
 
 HF_REPO = "jherng/xd-violence"
 # 原始转写文本（抽文本时已缓存在 text_features 的 npz 的 "text" 字段里）
@@ -304,7 +304,8 @@ def inspect_clip(key, n_frames=8):
             "预测": "暴力" if row[m + "_pred"] else "正常",
             "对错": "✗错" if row[m + "_pred"] != row.label else "✓对"} for m in probs]
     display(pd.DataFrame(tbl))
-    print(f"📝 原始转写: {txt_raw.get(key) or '(无对白 / 零向量)'}")
+    display(HTML(f"<div style='padding:6px 10px;background:#f6f8fa;border-left:4px solid #888;"
+                 f"margin:4px 0'><b>📝 转写</b>: {txt_raw.get(key) or '(无对白 / 零向量)'}</div>"))
     vm = vmap()
     if key not in vm:
         print("（HF 上没有此片段的原视频，跳过帧/音频）"); return
@@ -333,13 +334,20 @@ def inspect_clip(key, n_frames=8):
             ax[1].specgram(wav, Fs=sr, NFFT=1024, noverlap=512, cmap="magma")
             ax[1].set(title="spectrogram", xlabel="sec", ylabel="Hz")
             plt.tight_layout(); plt.show()
-            # (playable Audio widget omitted — its base64 wav bloats the notebook to
-            #  tens of MB and breaks large git pushes; the waveform+spectrogram above
-            #  carry the audio visually. To hear it interactively, run locally and add
-            #  `display(Audio(wav, rate=sr))`.)
+            # 紧凑可播放音频：32kbps 单声道 MP3（≤30s）base64 内嵌 —— 约为 WAV 体积的
+            # 1/50，16 个错例合计 ~2MB，notebook 可安然进 GitHub 仓库。
+            # 注：GitHub 网页预览会屏蔽 <audio> 播放器；用 nbviewer / Colab / 本地 Jupyter 播放。
+            import base64
+            mp3 = os.path.join(tmp, "a.mp3")
+            subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-i", vp,
+                            "-t", "30", "-ac", "1", "-b:a", "32k", mp3], check=False)
+            if os.path.exists(mp3) and os.path.getsize(mp3) > 1024:
+                b64 = base64.b64encode(open(mp3, "rb").read()).decode()
+                display(HTML(f"<audio controls preload='none' "
+                             f"src='data:audio/mpeg;base64,{b64}'></audio>"))
 
 # %% [markdown]
-# ## 9. 批量错例可视化：5 个误报(FP) + 5 个漏报(FN)
+# ## 9. 批量错例可视化：8 个误报(FP) + 8 个漏报(FN)，各占一半
 # 以 **⑤ late-fusion** 为参照方法（简单集成、代表性强），挑它**最自信判错**的两类错例：
 # **误报 FP**（真实正常、却判成暴力，按违规分从高到低）和 **漏报 FN**（真实暴力、却判成正常，
 # 按违规分从低到高）。每个都把原始帧/音频/转写/各方法预测拉出来，方便分别分析两类错误的成因。
@@ -350,14 +358,14 @@ REF = "⑤late"                                   # 参照方法（可换 "②co
 have_video = df["key"].isin(vmap().keys())
 fp = df[(df["label"] == 0) & (df[REF + "_pred"] == 1) & have_video].sort_values(REF, ascending=False)
 fn = df[(df["label"] == 1) & (df[REF + "_pred"] == 0) & have_video].sort_values(REF, ascending=True)
-print(f"参照 {REF}: 可视化的候选 —— 误报 FP {len(fp)} 个, 漏报 FN {len(fn)} 个（取各前 5）")
+print(f"参照 {REF}: 可视化的候选 —— 误报 FP {len(fp)} 个, 漏报 FN {len(fn)} 个（取各前 8）")
 
 # %% [markdown]
 # ### 9.1 误报 False Positives —— 真实正常，被判成暴力
 # 看这些"正常却被当暴力"的片段有什么共性（打闹/体育/音效大/画面昏暗…）。
 
 # %%
-for k in fp["key"].head(5):
+for k in fp["key"].head(8):
     inspect_clip(k); print("\n" + "=" * 90 + "\n")
 
 # %% [markdown]
@@ -365,7 +373,7 @@ for k in fp["key"].head(5):
 # 看这些"暴力却被漏掉"的片段有什么共性（暴力短促/无音效/远景/对白正常…）。
 
 # %%
-for k in fn["key"].head(5):
+for k in fn["key"].head(8):
     inspect_clip(k); print("\n" + "=" * 90 + "\n")
 
 # %% [markdown]
