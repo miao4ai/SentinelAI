@@ -63,12 +63,13 @@ def load_i3d_seq():
 
 
 def load_audio_seq():
-    acc = defaultdict(list)
-    for p in glob.glob(f"{AUDIO}/**/*.parquet", recursive=True):
-        tbl = pq.read_table(p, columns=["video_id", "feature_vector"]).to_pandas()
-        for vid, fv in zip(tbl["video_id"], tbl["feature_vector"]):
-            acc[base(vid)].append(np.mean([np.asarray(x, np.float32) for x in fv], 0))
-    return {k: np.stack(v).astype(np.float32) for k, v in acc.items()}
+    """Per clip: our self-extracted AST sequence (audio_seq/*.npz) — replaces the
+    third-party parquet (a 20% subset that died with the old bucket)."""
+    out = {}
+    for f in glob.glob(f"{DATA}/audio_seq/*.npz"):
+        z = np.load(f, allow_pickle=True)
+        out[str(z["key"])] = z["sequence"].astype(np.float32)
+    return out
 
 
 def load_text():
