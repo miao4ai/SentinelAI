@@ -78,7 +78,7 @@ def load_frames(key, n=N_IMG):
     arr = np.load(f"{FRAMES}/{safe(key)}.npz", allow_pickle=True)["frames"]   # (16,224,224,3)
     return [Image.fromarray(arr[i]) for i in range(0, len(arr), len(arr) // n)][:n]
 
-DEMO_KEY = "IP.Man.2.2010__#00-52-23_00-53-29_label_B1-0-0"    # 叶问2 打斗片段(真实标签: 暴力)
+DEMO_KEY = "Bullet.in.the.Head.1990__#00-04-41_00-06-12_label_B1-0-0"   # 喋血街头 斗殴(真实: 暴力)
 frames = load_frames(DEMO_KEY)
 
 messages = [{"role": "user",
@@ -107,7 +107,7 @@ fig.suptitle(f"输入的 {len(frames)} 帧: {DEMO_KEY}", fontsize=9); plt.show()
 #
 # **实现**：system 角色给"内容安全审核员"人设 + 违规类型清单；user 侧强制三步 CoT 输出
 # 格式。下面在两个 **V1/V2 融合模型判错过的样本**上跑真实推理：
-# 叶问2 打斗（⑤late 漏报 FN）和 Fury 坦克行军（⑤late 误报 FP）——看 VLM 的 CoT 怎么判。
+# 喋血街头 斗殴（⑤late 漏报 FN）和 Fury 坦克行军（⑤late 误报 FP）——看 VLM 的 CoT 怎么判。
 
 # %%
 SYSTEM = ("你是短视频平台的内容安全审核员，负责判定视频是否包含真实或影视暴力。"
@@ -134,7 +134,7 @@ def moderate(key):
     fig.suptitle(f"{key}  (真实标签: {truth})", fontsize=9); plt.show()
     print(ans, "\n" + "─" * 80)
 
-moderate("IP.Man.2.2010__#00-52-23_00-53-29_label_B1-0-0")   # 融合模型漏报的打斗
+moderate("Bullet.in.the.Head.1990__#00-04-41_00-06-12_label_B1-0-0")   # 融合模型漏报的斗殴
 moderate("Fury.2014__#01-24-39_01-26-24_label_A")            # 融合模型误报的战争片行军戏
 
 # %% [markdown]
@@ -282,7 +282,7 @@ def p_violent(m, key):
     return float(torch.sigmoid(py - pn))
 
 if isinstance(peft_model, PeftModel) and os.path.isdir(ADAPTER):
-    for key in ["IP.Man.2.2010__#00-52-23_00-53-29_label_B1-0-0",
+    for key in ["Bullet.in.the.Head.1990__#00-04-41_00-06-12_label_B1-0-0",
                 "Fury.2014__#01-24-39_01-26-24_label_A"]:
         pon = p_violent(peft_model, key)
         with peft_model.disable_adapter():
