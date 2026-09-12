@@ -1,6 +1,9 @@
 # %% [markdown]
 # # 融合错误分析 — 各位置判错了哪些样本
 #
+# > **🔊 音频播放入口**：GitHub 网页预览会过滤掉 `<audio>` 播放器（平台安全策略，所有 notebook 都如此）。
+# > 要**听声音**请打开 ▶ [**nbviewer 渲染版**](https://nbviewer.org/github/miao4ai/SentinelAI/blob/main/docs/error_analysis.ipynb)（免登录、点开即播），或在 Colab / 本地 Jupyter 打开本文件。图片、表格、转写文字在 GitHub 上不受影响。
+#
 # 在真实 XD-Violence **3 模态**数据（视觉 I3D + 音频 AST + 文本 ASR）上，用**电影分组
 # 交叉验证**为每个片段拿到 **out-of-fold（OOF）预测**，然后把**被判错的样本**挑出来看：
 #
