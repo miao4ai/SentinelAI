@@ -32,6 +32,15 @@
 #
 # **量化加载的实现**：`bitsandbytes` 的 `BitsAndBytesConfig` —— 4-bit 用 NF4 量化 +
 # bf16 计算；8-bit 只需换成 `load_in_8bit=True`（显存 ~9GB，精度略高、速度略慢）。
+#
+# **为什么 4-bit 后是 ~6GB 而不是 16/4=4GB？** 三个原因：①(大头) bitsandbytes 只量化
+# `nn.Linear`——**词嵌入和 lm_head 不量化**，Qwen 词表 15.2 万，这两块 ~1.1B 参数以 bf16
+# 保留就是 ~2.2GB（RMSNorm/bias 也留高精度）；②量化元数据：NF4 每 64 权重存一个缩放常数，
+# double_quant 后仍 ~0.13 bit/权重 ≈ 0.1GB；③底数其实是 8.3B 总参数（7.6B LLM + 0.67B
+# 视觉塔）= bf16 ~16.6GB。对账：LLM 线性 NF4 ~3.3 + 常数 0.1 + 嵌入/lm_head bf16 ~2.2 +
+# 视觉塔 NF4 ~0.3 ≈ **5.9GB**，正好等于实测——有效压缩率 ~2.8×，不是 4×。
+# （注：下面 cell 打印的"参数量 4.69B / bf16 约 9GB"偏小，是因为 bnb 把 4-bit 权重打包进
+# int8 张量后 `numel()` 报的是打包后的一半；真实总参数 8.3B。）
 
 # %%
 import glob, json, os, textwrap
