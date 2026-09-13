@@ -123,6 +123,64 @@ print(f"24 条连续批处理:      {t_bat*1000:7.0f} ms/clip   加速 {t_seq/t_
 print(f"样本得分范围 [{ps.min():.2f}, {ps.max():.2f}], 暴力占比(阈值0.5): {(ps>=.5).mean():.0%}")
 
 # %% [markdown]
+# **Profiling：加速到底从哪来？** 两个测量：
+#
+# 1. **batch-size 扫描**——每 clip 延迟随并发数的摊薄曲线。单请求时前向以"细长" GEMM
+#    为主，算术强度低、显存带宽是瓶颈，SM 大量空转；并发把同层的小 GEMM 合成大 GEMM，
+#    算术强度上升，直到吃满算力（曲线变平的位置就是 compute-bound 拐点）。
+# 2. **GPU 利用率时间线**——用 NVML 以 100ms 间隔采样 SM 利用率，分别覆盖 batch=1 串行段
+#    与整批段。串行段的锯齿与空隙（请求间的 Python 调度、CPU 端图像预处理、未饱和的
+#    前向）正是 continuous batching 抹掉的浪费；整批段应接近满载的平顶。
+#
+# 注意我们的负载只生成 **1 个 token**（yes/no），耗时几乎全在 **prefill**（8 帧视觉编码 +
+# 提示词前向），所以此处收益主要来自 prefill 的批内并行与调度开销消除；若是长文本生成
+# （如 7.3 的 CoT 解释），continuous batching 在 decode 阶段的"先完成先退出"会再叠加一层收益。
+
+# %%
+import threading
+import matplotlib.pyplot as plt
+import pynvml
+pynvml.nvmlInit()
+_h = pynvml.nvmlDeviceGetHandleByIndex(0)
+
+class GpuTrace:
+    """后台线程每 100ms 采一次 SM 利用率。"""
+    def __init__(self): self.t, self.u, self._stop = [], [], False
+    def _run(self, t0):
+        while not self._stop:
+            self.u.append(pynvml.nvmlDeviceGetUtilizationRates(_h).gpu)
+            self.t.append(time.time() - t0); time.sleep(0.1)
+    def __enter__(self):
+        self._th = threading.Thread(target=self._run, args=(time.time(),), daemon=True)
+        self._th.start(); return self
+    def __exit__(self, *a): self._stop = True; self._th.join()
+
+sizes = [1, 2, 4, 8, 16, 24]
+lat = []
+for bs in sizes:
+    t0 = time.time(); vlm_score(demo[:bs]); lat.append((time.time() - t0) / bs)
+
+with GpuTrace() as tr_seq:                       # 串行段: 4 条逐一提交
+    for k in demo[:4]: vlm_score([k])
+with GpuTrace() as tr_bat:                       # 整批段: 24 条一次提交
+    vlm_score(demo)
+
+fig, ax = plt.subplots(1, 2, figsize=(13, 3.6))
+ax[0].plot(sizes, [l * 1000 for l in lat], "o-")
+ax[0].set(xscale="log", xlabel="batch size", ylabel="ms / clip",
+          title="per-clip latency vs batch size (amortization)")
+ax[0].set_xticks(sizes); ax[0].set_xticklabels(sizes)
+for t, u, lab in [(tr_seq.t, tr_seq.u, f"batch=1 serial (mean {np.mean(tr_seq.u):.0f}%)"),
+                  (tr_bat.t, tr_bat.u, f"batched x24 (mean {np.mean(tr_bat.u):.0f}%)")]:
+    ax[1].plot(t, u, label=lab)
+ax[1].set(xlabel="sec", ylabel="GPU util %", ylim=(0, 105),
+          title="SM utilization timeline"); ax[1].legend(loc="lower right")
+plt.tight_layout(); plt.show()
+print(f"平均 SM 利用率: 串行 {np.mean(tr_seq.u):.0f}% → 整批 {np.mean(tr_bat.u):.0f}%")
+print(f"每 clip 延迟: batch=1 {lat[0]*1000:.0f} ms → batch={sizes[-1]} {lat[-1]*1000:.0f} ms "
+      f"({lat[0]/lat[-1]:.1f}x)")
+
+# %% [markdown]
 # ## 9.2 混合架构路由分发：分级审核流水线 (Cascade)
 #
 # ```
