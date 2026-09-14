@@ -213,7 +213,7 @@ try:
     vmap = json.load(open(f"{DATA}/add_normals/vmap.json"))
     vk = next(k for k in K_te if k in vmap)
     tmpd = tempfile.mkdtemp()
-    vp = hf_hub_download("OpenVideo/XD-Violence", vmap[vk], repo_type="dataset", local_dir=tmpd)
+    vp = hf_hub_download("jherng/xd-violence", vmap[vk], repo_type="dataset", local_dir=tmpd)
     def _decode():
         subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-i", vp,
                         "-vf", "fps=16/60,scale=224:224", "-frames:v", "16",
@@ -388,10 +388,10 @@ print("各标签：正常类为特异度(1-FPR)，其余为该类召回")
 print(per.round(3).to_string(index=False))
 
 sub = per[per["标签"].str.startswith(("B", "G"))]
+model_cols = [c for c in per.columns if c not in ("标签", "n")][:3]      # V1/V2/V3
 x = np.arange(len(sub)); w = 0.27
 fig, ax = plt.subplots(figsize=(10, 3.6))
-for i, n in enumerate(["V1 专家拼接 (co", "V2 深度融合 (ea", "V3 VLM (QLoRA)"]):
-    col = [c for c in sub.columns if c.startswith(n[:8])][0]
+for i, col in enumerate(model_cols):
     ax.bar(x + (i-1)*w, sub[col], w, label=col)
 ax.set_xticks(x); ax.set_xticklabels(sub["标签"]); ax.set(ylabel="Recall", ylim=(0, 1.05),
                                                          title="各违规类型召回率：三代对比")
@@ -479,8 +479,7 @@ print(f"幻觉与一致性（{N_HAL} 条测试片段，adapter off = 解释模�
 print(f"  格式解析失败      : {n_fmt}/{N_HAL} = {n_fmt/N_HAL:.1%}")
 print(f"  类别枚举越界      : {n_enum}/{N_HAL} = {n_enum/N_HAL:.1%}")
 print(f"  CoT 判定 vs logits 不一致: {len(disagree)}/{len(pair)} = {len(disagree)/max(len(pair),1):.1%}")
-print(f"  CoT 判定自身准确率: "
-      f"{np.mean([v == is_violent(k) for v, _, k, _ in [(v,s,k,t) for v,s,k,t in pair]]):.3f}")
+print(f"  CoT 判定自身准确率: {np.mean([v == is_violent(k) for v, _, k, _ in pair]):.3f}")
 print("\n=== 不一致样本（判定与分数打架，人工复审会被误导）===")
 for k, v, s, t in disagree[:3]:
     print(f"\n[{k[:46]}] 真实={'暴力' if is_violent(k) else '正常'}  "
