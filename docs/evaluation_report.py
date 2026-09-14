@@ -194,6 +194,10 @@ with torch.no_grad():
     o = v2(E); lo = o[0] if isinstance(o, tuple) else o
     p_v2 = torch.sigmoid(lo).squeeze(1).cpu().numpy()
 print(f"V2 训练 {time.time()-t0:.1f}s  ({sum(p.numel() for p in v2.parameters())/1e6:.2f}M 参数)")
+# 训练张量占显存近 1GB（Vs_tr 是 N×32×2048），测完立刻释放，给后面的 vLLM 腾 KV 池
+E1 = {k: v[:1].clone() for k, v in E.items()}          # .clone() 否则切片视图仍持有整块存储
+del T, E, yt, opt
+gc.collect(); torch.cuda.empty_cache()
 
 # %% [markdown]
 # ### 工程指标 A：V1/V2 的端到端延迟分解
@@ -275,7 +279,6 @@ if os.path.exists(f"{DATA}/fusion_concat_lr.onnx"):
     t0 = time.perf_counter(); [sess.run(None, {sess.get_inputs()[0].name: x1}) for _ in range(200)]
     eng_rows.append({"stage": "V1 融合头 LR (CPU)", "p50_ms": (time.perf_counter()-t0)/200*1e3,
                      "p95_ms": float("nan"), "mem_GB": 0.0})
-E1 = {k: v[:1] for k, v in E.items()}
 eng_rows.append(Stage("V2 融合头 transformer").run(lambda: v2(E1), n=50))
 
 import pandas as pd
@@ -288,12 +291,15 @@ print(pd.DataFrame(eng_rows).round(2).to_string(index=False))
 # **batch=1 端到端延迟**（含帧加载预处理，这才是真端到端）、**饱和吞吐**。
 
 # %%
-del v2; free()
+del v2, E1; free()
+free_B, total_B = torch.cuda.mem_get_info()
+print(f"vLLM 加载前: 空闲 {free_B/1e9:.1f} / {total_B/1e9:.1f} GB "
+      f"(本进程 torch 占用 {torch.cuda.memory_allocated()/1e9:.2f} GB)")
 from vllm import LLM, SamplingParams
 from vllm.lora.request import LoRARequest
 
 t0 = time.time()
-llm = LLM(model=VLM_MODEL, dtype="bfloat16", gpu_memory_utilization=0.80,
+llm = LLM(model=VLM_MODEL, dtype="bfloat16", gpu_memory_utilization=0.90,
           max_model_len=4096, limit_mm_per_prompt={"image": N_IMG}, enforce_eager=True,
           enable_lora=True, max_lora_rank=16)
 load_s = time.time() - t0
@@ -304,7 +310,7 @@ PROMPT = ("You are given 8 frames evenly sampled from one video. Does the video 
           "Answer with exactly one word: yes or no.")
 SPz = SamplingParams(temperature=0, max_tokens=1, logprobs=20)
 print(f"vLLM 引擎加载 {load_s:.0f}s; 权重+KV池占用 {torch.cuda.memory_allocated()/1e9:.1f} GB "
-      f"(gpu_memory_utilization=0.80 → 预留 ~{0.80*23.0:.0f} GB)")
+      f"(gpu_memory_utilization=0.90)")
 
 def load_frames(key):
     arr = np.load(f"{FRAMES}/{key}.npz", allow_pickle=True)["frames"]
