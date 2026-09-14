@@ -87,6 +87,13 @@ class Stage:
 def free():
     gc.collect(); torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
 
+def smi_mem_GB():
+    """全卡已用显存。vLLM v1 把引擎跑在独立进程，父进程的 torch.cuda.memory_allocated()
+    看不到它 —— 必须用 nvidia-smi 才能测到 VLM 的真实占用。"""
+    out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True).stdout.strip().splitlines()[0]
+    return float(out) / 1024
+
 print(f"GPU: {torch.cuda.get_device_name(0)}  "
       f"总显存 {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
 
@@ -309,8 +316,8 @@ PROMPT = ("You are given 8 frames evenly sampled from one video. Does the video 
           "physical violence (fighting, assault, weapons used against people, blood or injury)? "
           "Answer with exactly one word: yes or no.")
 SPz = SamplingParams(temperature=0, max_tokens=1, logprobs=20)
-print(f"vLLM 引擎加载 {load_s:.0f}s; 权重+KV池占用 {torch.cuda.memory_allocated()/1e9:.1f} GB "
-      f"(gpu_memory_utilization=0.90)")
+print(f"vLLM 引擎加载 {load_s:.0f}s; 整卡已用显存 {smi_mem_GB():.1f} GB (nvidia-smi, 含引擎子进程)")
+print("  引擎自报分解见上方日志: 权重 ~15.7 GiB + 峰值激活 ~2.0 GiB + KV cache ~1.6 GiB")
 
 def load_frames(key):
     arr = np.load(f"{FRAMES}/{key}.npz", allow_pickle=True)["frames"]
@@ -433,6 +440,49 @@ print(f"（I3D 分支为 FLOPs 估算 {i3d_est_ms:.0f} ms；其余均为实测�
 print(cost.round(2).to_string(index=False))
 
 # %% [markdown]
+# ### 10.2 结果与结论
+#
+# **① 算法侧：V2 深度融合在本切分上最强，V3 在 0.5 阈值下反而落后——但原因是校准不是排序。**
+#
+# | 方案 | F1 | **F2** | AUC | **R@FPR1%** |
+# |---|:---:|:---:|:---:|:---:|
+# | V1 专家拼接 | 0.935 | 0.919 | **0.983** | 0.782 |
+# | **V2 深度融合** | **0.949** | **0.941** | 0.975 | **0.855** |
+# | V3 VLM (QLoRA) | 0.838 | 0.786 | 0.964 | 0.627 |
+# | V3 零样本 | 0.370 | 0.269 | 0.926 | 0.518 |
+#
+# 注意 V3 的 **AUC 0.964 与 V1/V2 差距很小**，但 F1/召回掉得多——**排序能力在，阈值不在**。
+# 原因是 adapter 的校准是在 46% 暴力占比的训练分布上形成的，而本切分只有 37%；
+# **校准随分布漂移是 LoRA 微调最脆的一环**（§8.3 已指出微调收益的大头正是校准，
+# 这里看到了硬币的另一面）。对策：按目标分布重新定阈值，或做温度缩放/等渗回归。
+#
+# **② 分标签：短事件和分类学错配是 V3 的两个软肋。**
+# V3 在 **B2 枪击 0.718**（枪击瞬间极短，8 帧采样容易错过——采样率问题）和
+# **B6 车祸 0.571** 上明显偏低。但 B6 这个"低"要小心解读：10.3 的 RAG demo 显示
+# **VLM 其实判对了业务口径**（"属于意外事件，不属于人为暴力"），是数据集把车祸算作暴力。
+# **指标低 ≠ 模型错，可能是标签口径错**——这正是分标签分解的价值。
+#
+# **③ 工程侧：一个彻底反直觉的结论——V3 的端到端延迟比 V1/V2 低一个数量级。**
+#
+# | 方案 | 特征/预处理 | 模型 | **端到端** | F2 每 GPU-秒 |
+# |---|---:|---:|---:|---:|
+# | V1 专家拼接 | 3664 ms | 0.07 ms | **3664 ms** | 0.25 |
+# | V2 深度融合 | 3664 ms | 2.3 ms | **3666 ms** | 0.26 |
+# | V3 VLM (batch=1) | 20 ms | 235 ms | **255 ms** | 3.08 |
+# | V3 VLM (饱和批) | — | 192 ms | **192 ms** | **4.10** |
+#
+# V1/V2 的 3.66 秒里，**模型本身只占 0.07~2.3 毫秒**，99.9% 花在特征提取链上：
+# 视频解码 543 ms + I3D 278 ms（估算）+ **AST 1028 ms** + **ASR 1801 ms** + XLM-R 14 ms。
+# **ASR 一家就吃掉一半延迟，而文本恰恰是最弱的模态（F1 0.770）**——成本与收益严重错配。
+#
+# **④ 这个测量推翻了第九章级联架构的前提，必须诚实记录。**
+# 第九章比较的是"**已缓存特征**下的 LR 头（63 µs）vs VLM（256 ms）"，得出 ~600× 的速度差；
+# 但那隐含假设**特征是免费的**。真实线上流量是新视频，每条都要现抽特征——
+# 此时**让 100% 流量过 V1/V2 比全量直接送 V3 还贵**（3664 ms vs 192 ms）。
+# 级联要成立，第一级必须**只用廉价特征**：仅视觉分支（解码 543 + ResNet-50 41 ms ≈ 584 ms），
+# 砍掉 AST 与 ASR。这是本章最有价值的架构修正。
+
+# %% [markdown]
 # ## 10.3 结课复盘（一）：VLM 的幻觉问题
 #
 # 审核场景的幻觉有三种形态，危害依次递增：
@@ -467,25 +517,37 @@ N_HAL = 60
 hk = K_te[:N_HAL]
 cots = [o.outputs[0].text for o in llm.generate([cot_req(k) for k in hk], SPg, use_tqdm=False)]
 
+LABELLED = re.compile(r"违规判定[：:]\s*\**\s*(是|否)")
+LAB_CAT  = re.compile(r"违规类型[：:]\s*\**\s*([a-zA-Z_]+)")
+INLINE   = re.compile(r"(是|否)\s*[；;，,]\s*([a-zA-Z_]+)")      # "…。否；none；…" 单行压缩式
+
 def parse(t):
-    verdict = None
-    m = re.search(r"违规判定[：:]\s*(是|否)", t)
-    if m: verdict = 1 if m.group(1) == "是" else 0
-    cat = None
-    m = re.search(r"违规类型[：:]\s*\**\s*([a-zA-Z_]+)", t)
-    if m: cat = m.group(1).lower()
-    return verdict, cat
+    """返回 (判定, 类别, 格式)。模型会在两种格式间漂移，生产必须两种都能吃 —— 
+    或者干脆用约束解码根治。"""
+    m, mc = LABELLED.search(t), LAB_CAT.search(t)
+    if m:
+        return (1 if m.group(1) == "是" else 0,
+                mc.group(1).lower() if mc else None, "三步标签式")
+    m = INLINE.search(t)
+    if m:
+        return (1 if m.group(1) == "是" else 0, m.group(2).lower(), "单行压缩式")
+    return None, None, "无法解析"
 
 parsed = [parse(t) for t in cots]
-n_fmt = sum(v is None or c is None for v, c in parsed)
-n_enum = sum(c is not None and c not in ALLOWED for _, c in parsed)
-pair = [(v, p_zs[i], hk[i], cots[i]) for i, (v, c) in enumerate(parsed) if v is not None]
+from collections import Counter
+fmt = Counter(f for _, _, f in parsed)
+n_enum = sum(c is not None and c not in ALLOWED for _, c, _ in parsed)
+pair = [(v, p_zs[i], hk[i], cots[i]) for i, (v, c, f) in enumerate(parsed) if v is not None]
 disagree = [(k, v, s, t) for v, s, k, t in pair if v != int(s >= 0.5)]
-print(f"幻觉与一致性（{N_HAL} 条测试片段，adapter off = 解释模式）")
-print(f"  格式解析失败      : {n_fmt}/{N_HAL} = {n_fmt/N_HAL:.1%}")
-print(f"  类别枚举越界      : {n_enum}/{N_HAL} = {n_enum/N_HAL:.1%}")
-print(f"  CoT 判定 vs logits 不一致: {len(disagree)}/{len(pair)} = {len(disagree)/max(len(pair),1):.1%}")
-print(f"  CoT 判定自身准确率: {np.mean([v == is_violent(k) for v, _, k, _ in pair]):.3f}")
+print(f"幻觉与一致性（{N_HAL} 条测试片段，adapter off = 解释模式）\n")
+print("① 格式漂移（我们只给了一种输出格式，模型却自由切换）：")
+for f, n in fmt.most_common(): print(f"    {f:<10}{n:>3}/{N_HAL} = {n/N_HAL:.1%}")
+print(f"    → 只认三步标签式的严格解析器会漏掉 "
+      f"{fmt['单行压缩式']/N_HAL:.0%} 的有效回答（语义正确但机器读不出）")
+print(f"\n② 类别枚举越界（编出不在白名单的 category）: {n_enum}/{N_HAL} = {n_enum/N_HAL:.1%}")
+print(f"\n③ CoT 判定 vs logits 不一致: {len(disagree)}/{len(pair)} = {len(disagree)/max(len(pair),1):.1%}")
+print(f"   CoT 判定自身准确率: {np.mean([v == is_violent(k) for v, _, k, _ in pair]):.3f} "
+      f"(n={len(pair)})")
 print("\n=== 不一致样本（判定与分数打架，人工复审会被误导）===")
 for k, v, s, t in disagree[:3]:
     print(f"\n[{k[:46]}] 真实={'暴力' if is_violent(k) else '正常'}  "
@@ -543,3 +605,55 @@ for k in demo_keys:
     print(f"--- 无 RAG ---\n  {desc.strip()[:260]}")
     print(f"--- 检索命中 --- {[c for c, _, _ in hits]}")
     print(f"--- 注入条文后 ---\n  {out2.strip()[:320]}")
+
+# %% [markdown]
+# ## 10.3 结课复盘：结论
+#
+# **① 幻觉的三种形态，实测危害排序与我们的预期不同。**
+#
+# | 形态 | 实测 | 判断 |
+# |---|---|---|
+# | 类别幻觉（编出白名单外的 category） | **0%** | prompt 里列死枚举就够了，不是主要威胁 |
+# | **格式漂移** | **58%** 切换到未要求的"单行压缩式" | **最高频**。语义完全正确，但严格解析器读不出 |
+# | 判定-解释不一致 | ~4% | 频率低但**危害最大**——见下 |
+#
+# **格式漂移是约束解码最硬的实证论据**：我们只给了一种输出格式，模型却在
+# 「三步标签式」和「`…。否；none；…` 单行压缩式」之间自由切换，且**越是正常内容越倾向压缩**
+# （没什么可说就简写）。靠正则去追这种漂移是永远追不完的军备竞赛，
+# 正确解法是 **guided decoding 按 JSON Schema 屏蔽非法 token**——从物理上不可能写歪。
+#
+# **② 最危险的幻觉是"自圆其说"型。** 实测抓到的不一致样本：
+# 一部文艺片（`Before.Sunset.2004`，真实标签正常，P(yes)=0.03）的 CoT 写道——
+# > "虽然画面中没有直接显示暴力行为，**但根据人物的表情和姿态，可以推测他们可能在进行激烈的对话
+# > 或争执，这可能涉及到暴力行为**" → 违规判定：是
+#
+# 模型**先承认没有视觉证据，再靠推测得出违规结论**，而 logits 给的是 0.03。
+# 危害在于：拦截动作与上报理由**打架**，人工复审看到一段振振有词的理由就容易跟着点"确认违规"。
+# 这类必须靠系统设计防：**判定只认 logits，解释只作参考**，且在 UI 上标注二者不一致。
+#
+# **③ RAG 实测：能锚定推理，但不会自动修好结构化输出。**
+#
+# - **成功案例**：摩托车行驶片段 → 检索到 P-002（虚构打斗按分级限流）→ 判定 none 并**引用条款号**，
+#   这正是合规审计需要的可追溯性。
+# - **更有价值的半失败案例**：汽车翻滚事故（数据集标签 B6 车祸）——
+#   - 无 RAG：判定**是**，类型 violence，理由"车辆翻滚严重受损，这属于暴力行为"（按审核口径是错的）；
+#   - 注入 P-004（交通事故属意外事件，不属人为暴力）后：**理由部分被成功纠正**
+#     （"属于意外事件，不属于人为暴力"），**但 `违规判定` 字段仍然是"是"，类型还漂成了 gore**。
+#
+#   结论：**RAG grounds the reasoning, not the schema**。检索到的条文改变了模型的论述，
+#   却没有传导到结构化字段。生产架构必须是：**检索 → 推理 → 由命中的条款机械地推导判定**
+#   （条款自带 allow/deny 标记），而不是让模型自由生成 verdict 字段。
+#   这也说明 RAG 与约束解码是**互补而非替代**的两件事。
+#
+# **④ 顺带发现的性能瓶颈：KV cache 被权重挤没了。**
+# vLLM 自报：权重 15.67 GiB + 峰值激活 1.95 GiB，留给 PagedAttention 的 KV 池只剩 **1.57 GiB**
+# （29,360 tokens，4096-token 请求的**最大并发仅 7.17×**）。这就是 V3 饱和吞吐只有 5.2 QPS 的原因
+# ——不是算力不够，是**并发上不去**。优化方向明确：底座换 4-bit/AWQ 量化（15.7 GiB → ~6 GiB），
+# 可为 KV 池腾出 ~11 GiB，理论并发提升近 7 倍。这是比换卡更便宜的吞吐优化。
+#
+# ### 三代演进的一句话总结
+#
+# > **V1 证明了多模态特征可用，V2 证明了深度融合能榨干特征（本切分 F2 0.941 最佳），
+# > V3 证明了世界知识能跨域、能解释、且端到端反而最快——但它的校准最脆、格式最飘。**
+# > 生产架构的答案不是三选一，而是：**廉价视觉初筛（仅视觉分支）→ VLM 深度研判
+# > → 约束解码保结构 → RAG 锚定法规 → 判定只认 logits**。
